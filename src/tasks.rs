@@ -1,5 +1,7 @@
 //! `looper tasks list` and `looper tasks show`: read the follow-up task files
-//! Claude leaves in `.looper/tasks/` and print them in a human readable form.
+//! Claude leaves in `.looper/tasks/<plan>/` (or directly in `.looper/tasks/`,
+//! for plans without `{{plan}}` in the path) and print them in a human
+//! readable form.
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -48,6 +50,8 @@ impl Priority {
 /// One follow-up task file: a title, a `Priority: ...` line and a description.
 struct TaskFile {
     path: PathBuf,
+    /// The plan folder the file is in, if any.
+    plan: Option<String>,
     title: String,
     priority: Priority,
     /// The file without its title and priority lines.
@@ -56,7 +60,7 @@ struct TaskFile {
 }
 
 impl TaskFile {
-    fn load(path: &Path) -> Result<Self> {
+    fn load(path: &Path, plan: Option<String>) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read {}", path.display()))?;
         let created = std::fs::metadata(path)
@@ -79,11 +83,16 @@ impl TaskFile {
         }
         Ok(Self {
             path: path.to_path_buf(),
+            plan,
             title: title.unwrap_or_else(|| name(path)),
             priority,
             body: body.join("\n").trim().to_string(),
             created,
         })
+    }
+
+    fn plan_label(&self) -> &str {
+        self.plan.as_deref().unwrap_or("-")
     }
 
     fn created_at(&self) -> String {
@@ -113,62 +122,105 @@ fn name(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
-/// All task files in `task_dir`, newest first. `looper tasks show` numbers
-/// them in this order.
+/// The entries of `dir`, or none if it doesn't exist.
+fn read_dir(dir: &Path) -> Result<Vec<PathBuf>> {
+    match std::fs::read_dir(dir) {
+        Ok(entries) => Ok(entries.filter_map(|e| e.ok().map(|e| e.path())).collect()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e).with_context(|| format!("failed to read {}", dir.display())),
+    }
+}
+
+fn is_task_file(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ext == "md") && path.is_file()
+}
+
+/// All task files in `task_dir` and its plan folders, newest first.
+/// `looper tasks show` numbers them in this order.
 fn load_all(task_dir: &Path) -> Result<Vec<TaskFile>> {
-    let entries = match std::fs::read_dir(task_dir) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => {
-            return Err(e).with_context(|| format!("failed to read {}", task_dir.display()));
+    let mut tasks = Vec::new();
+    for path in read_dir(task_dir)? {
+        if path.is_dir() {
+            let plan = name(&path);
+            for file in read_dir(&path)?.into_iter().filter(|p| is_task_file(p)) {
+                tasks.push(TaskFile::load(&file, Some(plan.clone()))?);
+            }
+        } else if is_task_file(&path) {
+            tasks.push(TaskFile::load(&path, None)?);
         }
-    };
-    let mut tasks = entries
-        .filter_map(|entry| entry.ok().map(|e| e.path()))
-        .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
-        .map(|path| TaskFile::load(&path))
-        .collect::<Result<Vec<_>>>()?;
+    }
     tasks.sort_by(|a, b| (b.created, &b.path).cmp(&(a.created, &a.path)));
     Ok(tasks)
 }
 
-/// Delete every task file in `task_dir`, keeping the folder itself.
-pub fn clean(task_dir: &Path) -> Result<()> {
-    let tasks = load_all(task_dir)?;
-    for t in &tasks {
+/// All task files with their number from `looper tasks list`, only those of
+/// `plan` if given. The numbers stay the same with or without `plan`.
+fn load_numbered(task_dir: &Path, plan: Option<&str>) -> Result<Vec<(usize, TaskFile)>> {
+    Ok(load_all(task_dir)?
+        .into_iter()
+        .enumerate()
+        .map(|(i, t)| (i + 1, t))
+        .filter(|(_, t)| plan.is_none() || t.plan.as_deref() == plan)
+        .collect())
+}
+
+/// Where the tasks are, for messages: `task_dir`, or the plan's folder in it.
+fn location(task_dir: &Path, plan: Option<&str>) -> String {
+    match plan {
+        Some(plan) => task_dir.join(plan).display().to_string(),
+        None => task_dir.display().to_string(),
+    }
+}
+
+/// Delete every task file in `task_dir`, or only those of `plan`. Plan folders
+/// left empty are removed; `task_dir` itself is kept.
+pub fn clean(task_dir: &Path, plan: Option<&str>) -> Result<()> {
+    let tasks = load_numbered(task_dir, plan)?;
+    for (_, t) in &tasks {
         std::fs::remove_file(&t.path)
             .with_context(|| format!("failed to delete {}", t.path.display()))?;
+    }
+    for path in read_dir(task_dir)? {
+        let selected = plan.is_none_or(|plan| name(&path) == plan);
+        if selected && path.is_dir() {
+            // Fails, and is left alone, if something else is still in it.
+            let _ = std::fs::remove_dir(&path);
+        }
     }
     eprintln!(
         "deleted {} from {}",
         plural(tasks.len(), "task"),
-        task_dir.display()
+        location(task_dir, plan)
     );
     Ok(())
 }
 
-pub fn list(task_dir: &Path) -> Result<()> {
+pub fn list(task_dir: &Path, plan: Option<&str>) -> Result<()> {
     let style = Style::detect();
-    let tasks = load_all(task_dir)?;
+    let tasks = load_numbered(task_dir, plan)?;
     if tasks.is_empty() {
-        eprintln!("no tasks found in {}", task_dir.display());
+        eprintln!("no tasks found in {}", location(task_dir, plan));
         return Ok(());
     }
 
     let rows: Vec<Vec<Cell>> = tasks
         .iter()
-        .enumerate()
-        .map(|(i, t)| {
+        .map(|(n, t)| {
             vec![
-                Cell::plain((i + 1).to_string()),
+                Cell::plain(n.to_string()),
                 Cell::styled(t.priority.label(), t.priority.styled(style)),
                 Cell::plain(t.created_at()),
+                Cell::plain(t.plan_label()),
                 Cell::plain(name(&t.path)),
                 Cell::plain(truncate(&t.title, 70)),
             ]
         })
         .collect();
-    print_table(style, &["#", "PRIORITY", "CREATED", "FILE", "TITLE"], &rows);
+    print_table(
+        style,
+        &["#", "PRIORITY", "CREATED", "PLAN", "FILE", "TITLE"],
+        &rows,
+    );
     Ok(())
 }
 
@@ -199,7 +251,7 @@ pub fn show(task_dir: &Path, task: Option<&str>, pager: bool) -> Result<()> {
                     style,
                     width,
                     None,
-                    &TaskFile::load(Path::new(task))?,
+                    &TaskFile::load(Path::new(task), None)?,
                 );
             }
             None => bail!(
@@ -211,8 +263,8 @@ pub fn show(task_dir: &Path, task: Option<&str>, pager: bool) -> Result<()> {
     page(&out, pager)
 }
 
-/// Index of a task given as a number from `looper tasks list`, a file name or
-/// a path.
+/// Index of a task given as a number from `looper tasks list`, a file name
+/// (optionally as `plan/name`) or a path.
 fn find(tasks: &[TaskFile], task: &str) -> Option<usize> {
     if let Ok(n) = task.parse::<usize>()
         && (1..=tasks.len()).contains(&n)
@@ -220,7 +272,11 @@ fn find(tasks: &[TaskFile], task: &str) -> Option<usize> {
         return Some(n - 1);
     }
     let stem = task.strip_suffix(".md").unwrap_or(task);
-    if let Some(i) = tasks.iter().position(|t| name(&t.path) == stem) {
+    let matches = |t: &TaskFile| match stem.split_once('/') {
+        Some((plan, stem)) => t.plan.as_deref() == Some(plan) && name(&t.path) == stem,
+        None => name(&t.path) == stem,
+    };
+    if let Some(i) = tasks.iter().position(matches) {
         return Some(i);
     }
     let path = Path::new(task).canonicalize().ok()?;
@@ -236,10 +292,13 @@ fn render(out: &mut String, s: Style, width: usize, n: Option<usize>, t: &TaskFi
     };
     let head = n.map_or("Task".to_string(), |n| format!("Task {n}"));
     line(&format!(
-        "{} {}  {}",
+        "{} {}  {}{}",
         s.cyan("╭─"),
         s.bold(&head),
-        t.priority.styled(s)
+        t.priority.styled(s),
+        t.plan
+            .as_ref()
+            .map_or(String::new(), |plan| s.dim(&format!("  {plan}")))
     ));
     line(&format!(
         "{}  {}",

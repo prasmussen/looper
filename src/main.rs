@@ -26,6 +26,8 @@ const PLANS_DIR: &str = "plans";
 const TASKS_DIR: &str = "tasks";
 const LOGS_DIR: &str = "logs";
 const DEFAULTS_FILE: &str = "config.toml";
+/// Replaced with the plan's name in the prefix, suffix and tasks.
+const PLAN_VAR: &str = "{{plan}}";
 
 /// The top of `.looper/config.toml`, left out of the plans copied from it.
 const DEFAULTS_HEADER: &str = "\
@@ -49,7 +51,8 @@ prefix = """
 /goal
 """
 
-# Text added after every task.
+# Text added after every task. In the prefix, suffix and tasks, {{plan}} is
+# replaced with the plan's name.
 suffix = """
 Nobody is available to answer questions while you work. If a question comes
 up, don't ask it; go with what you would have suggested and continue.
@@ -66,7 +69,7 @@ later.
 Then run the tests and make sure they pass.
 
 Finally, for each gap or follow-up you did not complete, create one markdown
-file in .looper/tasks/. Keep each file short: a title, a line with
+file in .looper/tasks/{{plan}}/. Keep each file short: a title, a line with
 `Priority: LOW`, `Priority: MEDIUM` or `Priority: HIGH`, and a few sentences
 describing what needs to be done and why. The .looper/ folder is
 git-ignored on purpose; don't commit these files.
@@ -140,7 +143,10 @@ enum PlansCmd {
 #[derive(Subcommand)]
 enum TasksCmd {
     /// List tasks, newest first
-    List,
+    List {
+        /// Only list the tasks of this plan
+        plan: Option<String>,
+    },
 
     /// Show one task or all of them
     Show {
@@ -153,8 +159,11 @@ enum TasksCmd {
         no_pager: bool,
     },
 
-    /// Delete all tasks
-    Clean,
+    /// Delete all tasks, or those of one plan
+    Clean {
+        /// Only delete the tasks of this plan
+        plan: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -245,13 +254,16 @@ impl Config {
         toml::from_str(&text).with_context(|| format!("failed to parse {}", path.display()))
     }
 
-    fn prompt(&self, task: &str) -> String {
+    /// The prompt for one task: prefix + task + suffix, with `{{plan}}`
+    /// replaced by `plan`.
+    fn prompt(&self, task: &str, plan: &str) -> String {
         [&self.prefix, task, &self.suffix]
             .iter()
             .map(|part| part.trim())
             .filter(|part| !part.is_empty())
             .collect::<Vec<_>>()
             .join("\n\n")
+            .replace(PLAN_VAR, plan)
     }
 }
 
@@ -278,6 +290,14 @@ fn project_dir(looper: &Path) -> &Path {
 /// The path of plan `name` in .looper/plans.
 fn plan_path(looper: &Path, name: &str) -> PathBuf {
     looper.join(PLANS_DIR).join(format!("{name}.toml"))
+}
+
+/// The name of a plan: its file name without `.toml`.
+fn plan_name(plan: &Path) -> String {
+    plan.file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Resolve the plan argument of `looper plans run`: an existing file is used as is,
@@ -459,7 +479,7 @@ fn first_line(s: &str) -> &str {
 /// Create `<base>/<task file stem>-<timestamp>/`, so runs never overwrite each
 /// other.
 fn create_run_log_dir(looper: &Path, base: &Path, config: &Path) -> Result<PathBuf> {
-    let stem = config.file_stem().unwrap_or_default().to_string_lossy();
+    let stem = plan_name(config);
     let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
     create_logs_dir(looper, base)?;
 
@@ -546,6 +566,15 @@ fn run(looper: &Path, args: RunArgs) -> Result<()> {
         eprintln!("==> claude {} < prompt", config.claude_args.join(" "));
     }
 
+    let name = plan_name(&plan);
+    if !args.dry_run {
+        // Claude writes follow-ups for this plan to .looper/tasks/<plan>/.
+        let dir = looper.join(TASKS_DIR).join(&name);
+        create_looper_dir(looper)?;
+        std::fs::create_dir_all(&dir)
+            .with_context(|| format!("failed to create directory {}", dir.display()))?;
+    }
+
     let total = config.tasks.len();
     let run_started = Instant::now();
     let status = StatusLine::start(total, run_started);
@@ -566,7 +595,7 @@ fn run(looper: &Path, args: RunArgs) -> Result<()> {
 
     for (i, task) in config.tasks.iter().enumerate() {
         let n = i + 1;
-        let prompt = config.prompt(task);
+        let prompt = config.prompt(task, &name);
         let title = first_line(task);
         if args.dry_run {
             eprintln!("==> [{n}/{total}] {}", truncate(title, 80));
@@ -691,12 +720,31 @@ fn main() -> Result<()> {
         Cmd::Tasks { task_dir, command } => {
             let task_dir = task_dir.unwrap_or_else(|| looper.join(TASKS_DIR));
             match command {
-                TasksCmd::List => tasks::list(&task_dir),
-                TasksCmd::Clean => tasks::clean(&task_dir),
+                TasksCmd::List { plan } => tasks::list(&task_dir, plan.as_deref()),
+                TasksCmd::Clean { plan } => tasks::clean(&task_dir, plan.as_deref()),
                 TasksCmd::Show { task, no_pager } => {
                     tasks::show(&task_dir, task.as_deref(), !no_pager)
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+
+    #[test]
+    fn prompt_replaces_plan() {
+        let config = Config {
+            prefix: "/goal".into(),
+            suffix: "Write follow-ups to .looper/tasks/{{plan}}/.".into(),
+            claude_args: Vec::new(),
+            tasks: Vec::new(),
+        };
+        assert_eq!(
+            config.prompt("  Do {{plan}} things.\n", "refactor"),
+            "/goal\n\nDo refactor things.\n\nWrite follow-ups to .looper/tasks/refactor/."
+        );
     }
 }
