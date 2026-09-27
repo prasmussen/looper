@@ -39,9 +39,10 @@ prefix = """
 /goal
 """
 
-# Text added after every task.
+# Text added after every task. {{plan}} is replaced with the plan's name.
 suffix = """
-Commit your work in small, focused commits. Run the tests. ...
+Commit your work in small, focused commits. Run the tests. Write follow-ups
+you didn't finish to .looper/tasks/{{plan}}/. ...
 """
 
 # Each task becomes one `claude` call: prefix + task + suffix. Each task
@@ -59,10 +60,10 @@ tasks = [
 `looper plan new` starts each plan with a copy of `.looper/config.toml`, which
 is created with the defaults the first time `.looper/` is made. Edit it to
 change the `claude_args`, `prefix` and `suffix` of future plans; existing plans
-keep their own copy. The defaults include a suffix that asks Claude to work without
-asking questions, commit as it goes, run the tests, and write any follow-ups it
-didn't finish as markdown files in `.looper/tasks/{{plan}}/`. `looper plan run`
-refuses to start while a task still says `REPLACE ME`.
+keep their own copy. The defaults include a suffix that asks Claude to work
+without asking questions, commit as it goes, run the tests, and write any
+follow-ups it didn't finish as markdown files in `.looper/tasks/{{plan}}/`.
+`looper plan run` refuses to start while a task still says `REPLACE ME`.
 
 In the prefix, suffix and tasks, `{{plan}}` is replaced with the plan's name
 (its file name without `.toml`), so each plan's follow-ups get a folder of their
@@ -107,6 +108,8 @@ looper log show --detail minimal|compact|normal|full
 looper log clean              # delete all logs
 ```
 
+Pass `--log-dir DIR` to read logs saved with `looper plan run --log-dir DIR`.
+
 ### Follow-up tasks
 
 ```sh
@@ -118,7 +121,7 @@ looper task clean [PLAN]      # delete them all, or those of one plan
 Tasks are read from `.looper/tasks/<plan>/`, and from `.looper/tasks/` itself
 for plans whose suffix has no `{{plan}}`. `list` shows which plan each task
 belongs to; with `PLAN` it keeps the same numbers as the full list, so they
-work with `show`.
+work with `show`. Pass `--task-dir DIR` to read tasks from another folder.
 
 `show` commands go through `$PAGER` (default `less`) when writing to a
 terminal; pass `--no-pager` to print directly. Colors follow `NO_COLOR` and
