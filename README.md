@@ -5,6 +5,10 @@ unattended. You write a list of tasks in a plan file; looper sends each one
 to `claude -p` wrapped in a shared prefix and suffix, keeps a transcript of
 every run, and collects the follow-up tasks Claude leaves behind.
 
+## Screenshot
+
+<img width="1317" height="632" alt="Screenshot 2026-09-27 at 20 11 30" src="https://github.com/user-attachments/assets/ff92eb37-e557-438f-bd85-36c7b50fed79" />
+
 ## Install
 
 Requires Rust (edition 2024) and `claude` on your `PATH`.
