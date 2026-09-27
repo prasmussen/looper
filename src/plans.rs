@@ -1,12 +1,13 @@
-//! `looper plans list`: show the plan files in `.looper/plans/`.
+//! `looper plans list` and `looper plans show`: show the plan files in
+//! `.looper/plans/`.
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use anyhow::{Context, Result};
 
-use crate::logs::{Cell, Style, print_table};
-use crate::{Config, first_line, truncate};
+use crate::logs::{Cell, Style, page, plural, print_table};
+use crate::{Config, PLAN_VAR, first_line, plan_name, truncate};
 
 /// One plan file, with its tasks if it parses.
 struct PlanFile {
@@ -77,4 +78,59 @@ pub fn list(plan_dir: &Path) -> Result<()> {
         .collect();
     print_table(style, &["NAME", "TASKS", "MODIFIED", "FIRST TASK"], &rows);
     Ok(())
+}
+
+/// Show a plan: its claude flags, then the prefix, each task and the suffix,
+/// with `{{plan}}` replaced as in the prompts claude gets.
+pub fn show(plan: &Path, pager: bool) -> Result<()> {
+    let config = Config::load(plan)?;
+    let s = Style::detect();
+    let modified = std::fs::metadata(plan)
+        .and_then(|m| m.modified())
+        .map(|t| {
+            chrono::DateTime::<chrono::Local>::from(t)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_default();
+
+    let mut out = String::new();
+    let mut line = |text: &str| {
+        out.push_str(text);
+        out.push('\n');
+    };
+    let name = plan_name(plan);
+    line(&format!(
+        "{} {}  {}",
+        s.cyan("╭─"),
+        s.bold(&format!("Plan {name}")),
+        s.dim(&plural(config.tasks.len(), "task"))
+    ));
+    line(&format!(
+        "{}  claude {}",
+        s.cyan("│"),
+        config.claude_args.join(" ")
+    ));
+    line(&format!(
+        "{} {}",
+        s.cyan("╰─"),
+        s.dim(&format!("{} · {modified}", plan.display()))
+    ));
+
+    let mut section = |title: &str, text: &str| {
+        line("");
+        line(&s.cyan(&format!("── {title}")));
+        let text = text.trim().replace(PLAN_VAR, &name);
+        if text.is_empty() {
+            line(&s.dim("(empty)"));
+        } else {
+            line(&text);
+        }
+    };
+    section("Prefix", &config.prefix);
+    for (i, task) in config.tasks.iter().enumerate() {
+        section(&format!("Task {}", i + 1), task);
+    }
+    section("Suffix", &config.suffix);
+    page(&out, pager)
 }

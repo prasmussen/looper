@@ -136,6 +136,16 @@ enum PlansCmd {
     /// List plans, most recently changed first
     List,
 
+    /// Show a plan's settings and tasks
+    Show {
+        /// Plan to show: a name from .looper/plans, or a path to a plan file
+        plan: String,
+
+        /// Print directly instead of through a pager
+        #[arg(long)]
+        no_pager: bool,
+    },
+
     /// Run every task in a plan
     Run(RunArgs),
 }
@@ -300,7 +310,7 @@ fn plan_name(plan: &Path) -> String {
         .into_owned()
 }
 
-/// Resolve the plan argument of `looper plans run`: an existing file is used as is,
+/// Resolve the plan argument of `looper plans run` and `show`: an existing file is used as is,
 /// anything else is looked up by name in .looper/plans.
 fn resolve_plan(looper: &Path, plan: &str) -> PathBuf {
     let path = Path::new(plan);
@@ -702,6 +712,9 @@ fn main() -> Result<()> {
         Cmd::New { name } => new(looper, &name),
         Cmd::Plans { command } => match command {
             PlansCmd::List => plans::list(&looper.join(PLANS_DIR)),
+            PlansCmd::Show { plan, no_pager } => {
+                plans::show(&resolve_plan(looper, &plan), !no_pager)
+            }
             PlansCmd::Run(args) => run(looper, args),
         },
         Cmd::Logs { log_dir, command } => {

@@ -72,6 +72,7 @@ own and runs of different plans don't mix.
 
 ```sh
 looper plans list             # plans, most recently changed first
+looper plans show PLAN        # a plan's claude flags, prefix, tasks and suffix
 looper plans run PLAN         # run every task in a plan
 ```
 
