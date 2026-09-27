@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::path::{Path, PathBuf};
@@ -273,10 +274,10 @@ fn run_plain(mut cmd: Command, prompt: &str, status: &StatusLine) -> Result<Exit
     Ok(child.wait()?)
 }
 
-/// Turns and cost of one task, from claude's final `result` event.
+/// Tokens and cost of one task, from claude's final `result` event.
 #[derive(Default)]
 struct TaskStats {
-    turns: u64,
+    tokens: logs::Tokens,
     cost: f64,
 }
 
@@ -286,7 +287,8 @@ struct TaskStats {
 /// so it records what was asked and how claude exited.
 ///
 /// Models claude reports are added to `models`, and announced the first time
-/// each one is seen in the run.
+/// each one is seen in the run. The status line's token count follows along
+/// as claude replies; `result` then replaces it with the exact total.
 fn run_logged(
     mut cmd: Command,
     prompt: &str,
@@ -306,6 +308,10 @@ fn run_logged(
     let stdout = child.stdout.take().expect("stdout is piped");
     let mut renderer = logs::LiveRenderer::new();
     let mut stats = None;
+    // Claude repeats a reply's usage on every content block of it, so count
+    // each reply once. Output tokens are only partly known until `result`.
+    let mut replies = HashSet::new();
+    let mut tokens = logs::Tokens::default();
     for line in BufReader::new(stdout).lines() {
         let line = line.context("failed to read claude output")?;
         writeln!(log, "{line}")?;
@@ -319,9 +325,18 @@ fn run_logged(
                     status.err(&format!("==> model: {model}"));
                     models.push(model.to_string());
                 }
+                if event["type"] == "assistant"
+                    && let Some(id) = event["message"]["id"].as_str()
+                    && replies.insert(id.to_string())
+                {
+                    tokens += logs::Tokens::from_usage(&event["message"]["usage"]);
+                    status.set_tokens(tokens);
+                }
                 if event["type"] == "result" {
+                    let tokens = logs::Tokens::from_usage(&event["usage"]);
+                    status.set_tokens(tokens);
                     stats = Some(TaskStats {
-                        turns: event["num_turns"].as_u64().unwrap_or_default(),
+                        tokens,
                         cost: event["total_cost_usd"].as_f64().unwrap_or_default(),
                     });
                 }
@@ -492,7 +507,7 @@ fn run(args: RunArgs) -> Result<()> {
         ran += 1;
         let elapsed = format_elapsed(task_started);
         if let Some(stats) = &stats {
-            totals.turns += stats.turns;
+            totals.tokens += stats.tokens;
             totals.cost += stats.cost;
         }
 
@@ -529,7 +544,7 @@ fn run(args: RunArgs) -> Result<()> {
     if log_dir.is_some() {
         summary.push_str(&format!(
             " · {} · ${:.2}",
-            logs::format_turns(totals.turns),
+            totals.tokens.format(),
             totals.cost
         ));
     }

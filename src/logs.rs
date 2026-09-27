@@ -186,9 +186,9 @@ impl TaskLog {
             .unwrap_or_default()
     }
 
-    fn turns(&self) -> u64 {
+    fn tokens(&self) -> Tokens {
         self.result()
-            .and_then(|r| r["num_turns"].as_u64())
+            .map(|r| Tokens::from_usage(&r["usage"]))
             .unwrap_or_default()
     }
 }
@@ -270,10 +270,69 @@ fn run_name(run_dir: &Path) -> String {
         .unwrap_or_else(|| run_dir.display().to_string())
 }
 
-pub fn format_turns(turns: u64) -> String {
-    match turns {
-        1 => "1 turn".to_string(),
-        n => format!("{n} turns"),
+/// Tokens by type, from a `usage` object.
+#[derive(Clone, Copy, Default)]
+pub struct Tokens {
+    pub input: u64,
+    pub cache_write: u64,
+    pub cache_read: u64,
+    pub output: u64,
+}
+
+impl Tokens {
+    pub fn from_usage(usage: &Value) -> Self {
+        let get = |key: &str| usage[key].as_u64().unwrap_or_default();
+        Self {
+            input: get("input_tokens"),
+            cache_write: get("cache_creation_input_tokens"),
+            cache_read: get("cache_read_input_tokens"),
+            output: get("output_tokens"),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.input + self.cache_write + self.cache_read + self.output == 0
+    }
+
+    /// Every type, e.g. `tokens 174 in / 43k out · cache: 7.3M read / 117k write`.
+    pub fn format(&self) -> String {
+        format!(
+            "tokens {} in / {} out · cache: {} read / {} write",
+            format_count(self.input),
+            format_count(self.output),
+            format_count(self.cache_read),
+            format_count(self.cache_write)
+        )
+    }
+
+    /// Input of every kind against output, e.g. `tokens 7.4M in / 43k out`,
+    /// for where the full split doesn't fit.
+    pub fn format_short(&self) -> String {
+        format!(
+            "tokens {} in / {} out",
+            format_count(self.input + self.cache_write + self.cache_read),
+            format_count(self.output)
+        )
+    }
+}
+
+impl std::ops::AddAssign for Tokens {
+    fn add_assign(&mut self, other: Self) {
+        self.input += other.input;
+        self.cache_write += other.cache_write;
+        self.cache_read += other.cache_read;
+        self.output += other.output;
+    }
+}
+
+/// Format a count as e.g. `850`, `12.3k`, `123k` or `7.4M`.
+fn format_count(n: u64) -> String {
+    let f = n as f64;
+    match n {
+        0..1_000 => n.to_string(),
+        1_000..10_000 => format!("{:.1}k", f / 1e3),
+        10_000..1_000_000 => format!("{:.0}k", f / 1e3),
+        _ => format!("{:.1}M", f / 1e6),
     }
 }
 
@@ -618,7 +677,7 @@ impl Renderer {
         let mut stats = vec![s.status(status)];
         if log.result().is_some() {
             stats.push(format_duration(log.duration_ms()));
-            stats.push(format_turns(log.turns()));
+            stats.push(log.tokens().format());
             stats.push(format!("${:.2}", log.cost()));
         }
         let head = format!("Task {}{total}", log.number());
@@ -961,12 +1020,12 @@ impl Renderer {
         let ok = !event["is_error"].as_bool().unwrap_or(false);
         let subtype = event["subtype"].as_str().unwrap_or("done");
         let secs = event["duration_ms"].as_f64().unwrap_or_default();
-        let turns = event["num_turns"].as_u64().unwrap_or_default();
+        let tokens = Tokens::from_usage(&event["usage"]);
         let cost = event["total_cost_usd"].as_f64().unwrap_or_default();
         let summary = format!(
             "{subtype} · {} · {} · ${cost:.2}",
             format_duration(secs),
-            format_turns(turns)
+            tokens.format()
         );
         self.line(&if ok {
             s.green(&format!("✓ {summary}"))

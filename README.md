@@ -71,9 +71,9 @@ looper run [CONFIG]
 
 While it runs, looper shows a readable version of the conversation with a
 timestamp on each line, and a status line at the bottom with the current task,
-how many are left, and elapsed time. A short title for each task is generated
+how many are left, elapsed time and tokens used. A short title for each task is generated
 in the background with Haiku. At the end it prints the number of tasks run, the
-models used, total turns and cost, and which tasks failed (exiting with status 1
+models used, total tokens and cost, and which tasks failed (exiting with status 1
 if any did).
 
 ### Logs
