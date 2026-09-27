@@ -227,11 +227,14 @@ struct TaskStats {
     cost: f64,
 }
 
+/// Models claude reports are added to `models`, and announced the first time
+/// each one is seen in the run.
 fn run_logged(
     mut cmd: Command,
     prompt: &str,
     header: Value,
     log_path: &Path,
+    models: &mut Vec<String>,
 ) -> Result<(ExitStatus, Option<TaskStats>)> {
     let mut log = File::create(log_path)
         .with_context(|| format!("failed to create log file {}", log_path.display()))?;
@@ -249,6 +252,14 @@ fn run_logged(
         writeln!(log, "{line}")?;
         match serde_json::from_str::<Value>(&line) {
             Ok(event) => {
+                if event["type"] == "system"
+                    && event["subtype"] == "init"
+                    && let Some(model) = event["model"].as_str()
+                    && !models.iter().any(|m| m == model)
+                {
+                    eprintln!("==> model: {model}");
+                    models.push(model.to_string());
+                }
                 if event["type"] == "result" {
                     stats = Some(TaskStats {
                         turns: event["num_turns"].as_u64().unwrap_or_default(),
@@ -374,6 +385,7 @@ fn run(args: RunArgs) -> Result<()> {
     let mut failures = Vec::new();
     let mut ran = 0;
     let mut totals = TaskStats::default();
+    let mut models = Vec::new();
     let run_started = Instant::now();
 
     for (i, task) in config.tasks.iter().enumerate() {
@@ -402,7 +414,7 @@ fn run(args: RunArgs) -> Result<()> {
                     "prompt": prompt,
                     "started_at": chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                 });
-                run_logged(cmd, &prompt, header, &log_path)?
+                run_logged(cmd, &prompt, header, &log_path, &mut models)?
             }
             None => (spawn_claude(cmd, &prompt)?.wait()?, None),
         };
@@ -437,6 +449,9 @@ fn run(args: RunArgs) -> Result<()> {
         "==> finished {ran} of {total} tasks in {}",
         format_elapsed(run_started)
     );
+    if !models.is_empty() {
+        summary.push_str(&format!(" · {}", models.join(", ")));
+    }
     if log_dir.is_some() {
         summary.push_str(&format!(
             " · {} · ${:.2}",
