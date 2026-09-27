@@ -11,11 +11,11 @@ use serde_json::Value;
 
 use crate::{first_line, truncate};
 
-/// Tool output lines shown per tool call unless `--full` is given.
+/// Tool output lines shown per tool call below `--detail full`.
 const RESULT_LINES: usize = 8;
-/// Diff lines shown per edit unless `--full` is given.
+/// Diff lines shown per edit below `--detail full`.
 const DIFF_LINES: usize = 30;
-/// Error output lines shown per tool call unless `--full` is given.
+/// Error output lines shown per tool call below `--detail full`.
 const ERROR_LINES: usize = 20;
 
 /// ANSI styling that switches itself off when stdout isn't a terminal or
@@ -70,6 +70,23 @@ impl Style {
             Status::Incomplete => self.yellow("… incomplete"),
         }
     }
+}
+
+/// How much of a transcript `looper logs show` prints. Claude's own text is
+/// always shown in full.
+#[derive(Clone, Copy, PartialEq, Default, clap::ValueEnum)]
+pub enum Detail {
+    /// Each tool call as its short description and one line of command; no tool
+    /// output, diffs or file contents (failures still get one line)
+    Minimal,
+    /// Like normal, but each tool call (command, file path, ...) is cut to a
+    /// single line
+    Compact,
+    /// Tool calls in full, tool output and diffs shortened
+    #[default]
+    Normal,
+    /// Everything: full prompt, all tool output, thinking, raw tool inputs
+    Full,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -391,7 +408,7 @@ pub fn show(
     log_dir: &Path,
     run: Option<&str>,
     task: Option<usize>,
-    full: bool,
+    detail: Detail,
     pager: bool,
 ) -> Result<()> {
     let target = resolve_run(log_dir, run)?;
@@ -419,7 +436,9 @@ pub fn show(
         out: String::new(),
         style: Style::detect(),
         width: terminal_width(),
-        full,
+        full: detail == Detail::Full,
+        compact: matches!(detail, Detail::Compact | Detail::Minimal),
+        minimal: detail == Detail::Minimal,
         cwd: None,
         tools: HashMap::new(),
     };
@@ -467,6 +486,10 @@ struct Renderer {
     style: Style,
     width: usize,
     full: bool,
+    /// Cut tool calls to one line.
+    compact: bool,
+    /// Show tool calls without anything that follows them.
+    minimal: bool,
     /// Claude's working directory for the current task, used to shorten paths.
     cwd: Option<String>,
     /// Tool name by tool_use id, to know what a tool result belongs to.
@@ -477,6 +500,14 @@ impl Renderer {
     fn line(&mut self, text: &str) {
         self.out.push_str(text);
         self.out.push('\n');
+    }
+
+    /// Make sure what comes next is separated by a blank line, without
+    /// doubling up blank lines already there.
+    fn blank_line(&mut self) {
+        if !self.out.is_empty() && !self.out.ends_with("\n\n") {
+            self.out.push('\n');
+        }
     }
 
     fn task(&mut self, log: &TaskLog) {
@@ -546,7 +577,7 @@ impl Renderer {
             };
             if let Some(text) = text {
                 self.section(heading);
-                self.markdown(text.trim());
+                self.markdown(text.trim(), false);
                 self.line("");
             }
         }
@@ -575,6 +606,24 @@ impl Renderer {
         }
     }
 
+    /// Cut multi-line text to its first non-empty line, fitting the terminal
+    /// after `used` columns. Returns the line and a note like " (+3 lines)".
+    fn one_line(&self, text: &str, used: usize) -> (String, String) {
+        let mut lines = text.lines().filter(|l| !l.trim().is_empty());
+        let first = lines.next().unwrap_or_default().trim_end();
+        let rest = lines.count();
+        let more = match rest {
+            0 => String::new(),
+            1 => " (+1 line)".to_string(),
+            n => format!(" (+{n} lines)"),
+        };
+        let room = self
+            .width
+            .saturating_sub(used + more.chars().count())
+            .max(20);
+        (truncate(first, room), more)
+    }
+
     /// Shorten absolute paths inside the task's working directory.
     fn relative(&self, text: &str) -> String {
         match &self.cwd {
@@ -590,9 +639,14 @@ impl Renderer {
     }
 
     /// Render markdown for the terminal (plain text when colors are off).
-    fn markdown(&mut self, text: &str) {
+    /// Claude's own messages get their own color so they stand out from the
+    /// tool calls around them.
+    fn markdown(&mut self, text: &str, from_claude: bool) {
         if self.style.color {
-            let skin = termimad::MadSkin::default();
+            let mut skin = termimad::MadSkin::default();
+            if from_claude {
+                skin.set_fg(claude_blue());
+            }
             let rendered = skin.text(text, Some(self.width)).to_string();
             self.out.push_str(&rendered);
             if !rendered.ends_with('\n') {
@@ -613,7 +667,8 @@ impl Renderer {
                 Some("text") => {
                     let text = block["text"].as_str().unwrap_or_default().trim();
                     if !text.is_empty() {
-                        self.markdown(text);
+                        self.blank_line();
+                        self.markdown(text, true);
                         self.line("");
                     }
                 }
@@ -641,19 +696,38 @@ impl Renderer {
             self.tools.insert(id.to_string(), name.to_string());
         }
         let summary = self.relative(&tool_summary(name, input));
-        let mut lines = summary.lines();
-        let first = truncate(
-            lines.next().unwrap_or_default(),
-            self.width.saturating_sub(name.len() + 3).max(20),
-        );
-        self.line(&format!("{} {} {first}", s.cyan("⏺"), s.bold(name)));
-        for line in lines {
-            self.line(&format!("  {line}"));
+        let head = format!("{} {}", s.cyan("›"), name);
+        let description = input["description"]
+            .as_str()
+            .map(str::trim)
+            .filter(|d| name == "Bash" && !d.is_empty());
+
+        if let Some(description) = description {
+            // What Claude meant to do first, the command itself under it.
+            self.line(&format!("{head} {} {description}", s.dim("·")));
+            if self.compact {
+                let (line, more) = self.one_line(&summary, 4);
+                self.line(&s.dim(&format!("  $ {line}{more}")));
+            } else {
+                let mut lines = summary.lines();
+                let first = lines.next().unwrap_or_default();
+                self.line(&s.dim(&format!("  $ {first}")));
+                for line in lines {
+                    self.line(&s.dim(&format!("    {line}")));
+                }
+            }
+        } else if self.compact {
+            let (line, more) = self.one_line(&summary, name.len() + 3);
+            self.line(&format!("{head} {line}{}", s.dim(&more)));
+        } else {
+            let mut lines = summary.lines();
+            self.line(&format!("{head} {}", lines.next().unwrap_or_default()));
+            for line in lines {
+                self.line(&format!("  {line}"));
+            }
         }
-        if let Some(desc) = input["description"].as_str()
-            && name == "Bash"
-        {
-            self.line(&s.dim(&format!("  # {desc}")));
+        if self.minimal {
+            return;
         }
 
         match name {
@@ -727,7 +801,7 @@ impl Renderer {
             self.line(&line);
         }
         if hidden > 0 {
-            self.line(&s.dim(&format!("  … {hidden} more diff lines (--full)")));
+            self.line(&s.dim(&format!("  … {hidden} more diff lines (--detail full)")));
         }
     }
 
@@ -755,6 +829,15 @@ impl Renderer {
                 .map(String::as_str)
                 .unwrap_or_default();
 
+            if self.minimal {
+                if is_error {
+                    let first = lines.first().copied().unwrap_or("failed");
+                    let first = truncate(first, self.width.saturating_sub(4).max(20));
+                    self.line(&s.red(&format!("  ✗ {first}")));
+                }
+                continue;
+            }
+
             // The call already showed what matters for these; only show their
             // result if something went wrong.
             if is_quiet(tool) && !is_error && !self.full {
@@ -779,7 +862,7 @@ impl Renderer {
             }
             if lines.len() > limit {
                 self.line(&s.dim(&format!(
-                    "  │ … {} more lines (--full)",
+                    "  │ … {} more lines (--detail full)",
                     lines.len() - limit
                 )));
             }
@@ -789,6 +872,7 @@ impl Renderer {
 
     fn result(&mut self, event: &Value) {
         let s = self.style;
+        self.blank_line();
         let ok = !event["is_error"].as_bool().unwrap_or(false);
         let subtype = event["subtype"].as_str().unwrap_or("done");
         let secs = event["duration_ms"].as_f64().unwrap_or_default();
@@ -810,11 +894,49 @@ impl Renderer {
             self.line(&s.yellow(&format!("⚠ {} permission denials:", denials.len())));
             for denial in denials {
                 let name = denial["tool_name"].as_str().unwrap_or("tool");
-                let what = truncate(&tool_summary(name, &denial["tool_input"]), 100);
+                let what = self.relative(&tool_summary(name, &denial["tool_input"]));
+                let what = if self.compact {
+                    let (line, more) = self.one_line(&what, name.len() + 3);
+                    format!("{line}{more}")
+                } else {
+                    what.lines().collect::<Vec<_>>().join("\n    ")
+                };
                 self.line(&s.yellow(&format!("  {name} {what}")));
             }
         }
     }
+}
+
+/// Claude Code's mid-blue (`professionalBlue` in its themes), which reads well
+/// on both light and dark backgrounds.
+fn claude_blue() -> termimad::crossterm::style::Color {
+    use termimad::crossterm::style::Color;
+
+    if claude_theme().is_some_and(|theme| theme.ends_with("-ansi")) {
+        return Color::Blue;
+    }
+    let truecolor =
+        std::env::var("COLORTERM").is_ok_and(|v| v.contains("truecolor") || v.contains("24bit"));
+    if truecolor {
+        Color::Rgb {
+            r: 106,
+            g: 155,
+            b: 204,
+        }
+    } else {
+        // Closest color in the 256-color palette.
+        Color::AnsiValue(68)
+    }
+}
+
+/// The `theme` from Claude Code's settings (`dark`, `light`, `dark-ansi`, ...).
+fn claude_theme() -> Option<String> {
+    let dir = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".claude")))?;
+    let text = std::fs::read_to_string(dir.join("settings.json")).ok()?;
+    let settings: Value = serde_json::from_str(&text).ok()?;
+    settings["theme"].as_str().map(str::to_string)
 }
 
 /// A one-glance description of a tool call.
@@ -853,7 +975,7 @@ fn tool_summary(name: &str, input: &Value) -> String {
 }
 
 /// Tools whose successful result adds nothing to what the call already shows
-/// (a file path, a diff, a todo list), so it's hidden unless `--full`.
+/// (a file path, a diff, a todo list), so it's hidden below `--detail full`.
 fn is_quiet(name: &str) -> bool {
     matches!(
         name,
@@ -862,7 +984,7 @@ fn is_quiet(name: &str) -> bool {
 }
 
 /// Whether the summary (plus any diff) already shows everything worth seeing,
-/// so `--full` doesn't need to print the raw input as well.
+/// so `--detail full` doesn't need to print the raw input as well.
 fn summary_is_complete(name: &str) -> bool {
     matches!(
         name,

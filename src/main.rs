@@ -111,10 +111,9 @@ enum LogsCmd {
         #[arg(long)]
         task: Option<usize>,
 
-        /// Show everything: full prompt, full tool output, thinking, and raw
-        /// tool inputs
-        #[arg(long)]
-        full: bool,
+        /// How much to show
+        #[arg(long, value_enum, default_value_t)]
+        detail: logs::Detail,
 
         /// Print directly instead of through a pager
         #[arg(long)]
@@ -411,9 +410,9 @@ fn main() -> Result<()> {
             LogsCmd::Show {
                 run,
                 task,
-                full,
+                detail,
                 no_pager,
-            } => logs::show(&log_dir, run.as_deref(), task, full, !no_pager),
+            } => logs::show(&log_dir, run.as_deref(), task, detail, !no_pager),
         },
     }
 }
