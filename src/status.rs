@@ -1,7 +1,8 @@
 //! The status line `looper run` keeps at the bottom of the terminal: which task
 //! is running, how many are left, and how long this task and the whole run
 //! have taken. It ticks every second, and everything `looper run` prints goes
-//! through it so output scrolls above the line instead of over it.
+//! through it so output scrolls above the line instead of over it, with the
+//! time at the start of every line.
 
 use std::io::{IsTerminal, Write};
 use std::sync::mpsc::Receiver;
@@ -9,6 +10,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::logs::{Style, format_duration};
+
+/// Columns the `12:34:56 ` timestamp adds in front of each line.
+pub const STAMP_WIDTH: usize = 9;
 
 pub struct StatusLine {
     shared: Arc<Mutex<State>>,
@@ -115,7 +119,8 @@ impl StatusLine {
             .write(&format!("{line}\n"), true);
     }
 
-    /// Remove the status line for good, e.g. before the final summary.
+    /// Remove the status line for good, e.g. before the final summary. Output
+    /// still gets timestamps after this.
     pub fn stop(&self) {
         let mut state = self.shared.lock().unwrap();
         state.clear();
@@ -135,6 +140,7 @@ impl State {
             return;
         }
         self.clear();
+        let text = self.stamp(text);
         if stderr {
             let _ = std::io::stdout().flush();
             let _ = std::io::stderr().write_all(text.as_bytes());
@@ -144,6 +150,24 @@ impl State {
         }
         self.mid_line = !text.ends_with('\n');
         self.draw();
+    }
+
+    /// Put the time at the start of each line in `text`, leaving blank lines
+    /// and the rest of a line that was started earlier alone.
+    fn stamp(&self, text: &str) -> String {
+        let now = chrono::Local::now().format("%H:%M:%S").to_string();
+        let now = self.style.dim(&now);
+        let mut out = String::with_capacity(text.len());
+        let mut line_start = !self.mid_line;
+        for piece in text.split_inclusive('\n') {
+            if line_start && piece != "\n" {
+                out.push_str(&now);
+                out.push(' ');
+            }
+            out.push_str(piece);
+            line_start = piece.ends_with('\n');
+        }
+        out
     }
 
     fn clear(&mut self) {

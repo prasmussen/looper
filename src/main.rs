@@ -431,22 +431,23 @@ fn run(args: RunArgs) -> Result<()> {
         eprintln!("==> claude {} < prompt", config.claude_args.join(" "));
     }
 
+    let total = config.tasks.len();
+    let run_started = Instant::now();
+    let status = StatusLine::start(total, run_started);
+
     let log_dir = match (&args.log_dir, args.no_log || args.dry_run) {
         (_, true) => None,
         (Some(base), false) => Some(create_run_log_dir(base, &args.config)?),
         (None, false) => Some(create_run_log_dir(Path::new(LOGS_DIR), &args.config)?),
     };
     if let Some(log_dir) = &log_dir {
-        eprintln!("==> logging to {}", log_dir.display());
+        status.err(&format!("==> logging to {}", log_dir.display()));
     }
 
-    let total = config.tasks.len();
     let mut failures = Vec::new();
     let mut ran = 0;
     let mut totals = TaskStats::default();
     let mut models = Vec::new();
-    let run_started = Instant::now();
-    let status = StatusLine::start(total, run_started);
 
     for (i, task) in config.tasks.iter().enumerate() {
         let n = i + 1;
@@ -528,11 +529,11 @@ fn run(args: RunArgs) -> Result<()> {
     if !failures.is_empty() {
         summary.push_str(&format!(" · {} failed", failures.len()));
     }
-    eprintln!("{summary}");
+    status.err(&summary);
 
     if !failures.is_empty() {
         for (n, task) in &failures {
-            eprintln!("    ✗ {n}: {}", truncate(first_line(task), 80));
+            status.err(&format!("    ✗ {n}: {}", truncate(first_line(task), 80)));
         }
         std::process::exit(1);
     }

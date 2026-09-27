@@ -530,7 +530,11 @@ pub struct LiveRenderer {
 impl LiveRenderer {
     pub fn new() -> Self {
         Self {
-            renderer: Renderer::new(Detail::Minimal),
+            renderer: Renderer {
+                // Leave room for the timestamp in front of each line.
+                width: terminal_width().saturating_sub(crate::status::STAMP_WIDTH),
+                ..Renderer::new(Detail::Minimal)
+            },
             printed: 0,
         }
     }
