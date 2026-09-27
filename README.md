@@ -75,6 +75,7 @@ own and runs of different plans don't mix.
 looper plan list              # plans, most recently changed first
 looper plan show PLAN         # a plan's claude flags, prefix, tasks and suffix
 looper plan run PLAN          # run every task in a plan
+looper plan delete PLAN...    # delete plans
 ```
 
 `PLAN` is a plan name from `.looper/plans/`, or a path to a plan file.
@@ -105,6 +106,7 @@ looper log list RUN           # tasks of one run
 looper log show [RUN]         # transcript of a run (default: the latest)
 looper log show --task 2      # only task 2
 looper log show --detail minimal|compact|normal|full
+looper log delete RUN...      # delete runs
 looper log clean              # delete all logs
 ```
 
@@ -115,6 +117,7 @@ Pass `--log-dir DIR` to read logs saved with `looper plan run --log-dir DIR`.
 ```sh
 looper task list [PLAN]       # follow-ups Claude wrote, newest first
 looper task show [TASK]       # one task (number, file name or plan/file) or all
+looper task delete TASK...    # delete tasks (numbers or file names)
 looper task clean [PLAN]      # delete them all, or those of one plan
 ```
 

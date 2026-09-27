@@ -359,6 +359,31 @@ pub(crate) fn terminal_width() -> usize {
     (termimad::terminal_size().0 as usize).clamp(40, 120)
 }
 
+/// Delete runs, given as folder names in `log_dir`. All are looked up before
+/// any is deleted, so a typo deletes nothing.
+pub fn delete(log_dir: &Path, names: &[String]) -> Result<()> {
+    let dirs = names
+        .iter()
+        .map(|run| {
+            let dir = log_dir.join(run);
+            if run.is_empty() || run.contains(['/', '\\']) || run.starts_with('.') || !dir.is_dir()
+            {
+                bail!(
+                    "no run named {run} in {} (see `looper log list`)",
+                    log_dir.display()
+                );
+            }
+            Ok(dir)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    for dir in dirs {
+        std::fs::remove_dir_all(&dir)
+            .with_context(|| format!("failed to delete {}", dir.display()))?;
+        eprintln!("deleted {}", dir.display());
+    }
+    Ok(())
+}
+
 /// Delete every run folder in `log_dir`, keeping the folder itself.
 pub fn clean(log_dir: &Path) -> Result<()> {
     let runs = runs(log_dir)?;

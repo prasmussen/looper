@@ -1,13 +1,13 @@
-//! `looper plan list` and `looper plan show`: show the plan files in
+//! `looper plan list`, `show` and `delete`: show and delete the plan files in
 //! `.looper/plans/`.
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::logs::{Cell, Style, page, plural, print_table};
-use crate::{Config, PLAN_VAR, first_line, plan_name, truncate};
+use crate::{Config, PLAN_VAR, first_line, plan_name, resolve_plan, truncate};
 
 /// One plan file, with its tasks if it parses.
 struct PlanFile {
@@ -133,4 +133,28 @@ pub fn show(plan: &Path, pager: bool) -> Result<()> {
     }
     section("Suffix", &config.suffix);
     page(&out, pager)
+}
+
+/// Delete plans, given by name or path. Nothing is deleted unless every one of
+/// them is a plan file, so a typo or a path to some other file doesn't delete
+/// the rest.
+pub fn delete(looper: &Path, plans: &[String]) -> Result<()> {
+    let paths = plans
+        .iter()
+        .map(|plan| {
+            let path = resolve_plan(looper, plan);
+            if !path.is_file() {
+                bail!("no plan {plan} (see `looper plan list`)");
+            }
+            Config::load(&path)
+                .with_context(|| format!("{} doesn't look like a plan", path.display()))?;
+            Ok(path)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    for path in paths {
+        std::fs::remove_file(&path)
+            .with_context(|| format!("failed to delete {}", path.display()))?;
+        eprintln!("deleted {}", path.display());
+    }
+    Ok(())
 }

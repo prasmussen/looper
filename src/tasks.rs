@@ -1,4 +1,4 @@
-//! `looper task list` and `looper task show`: read the follow-up task files
+//! `looper task list`, `show`, `delete` and `clean`: read the follow-up task files
 //! Claude leaves in `.looper/tasks/<plan>/` (or directly in `.looper/tasks/`,
 //! for plans without `{{plan}}` in the path) and print them in a human
 //! readable form.
@@ -192,6 +192,37 @@ pub fn clean(task_dir: &Path, plan: Option<&str>) -> Result<()> {
         plural(tasks.len(), "task"),
         location(task_dir, plan)
     );
+    Ok(())
+}
+
+/// Delete tasks, given as numbers from `looper task list`, file names or
+/// paths. All are looked up before any is deleted, so the numbers don't shift
+/// halfway and a typo deletes nothing. Plan folders left empty are removed.
+pub fn delete(task_dir: &Path, names: &[String]) -> Result<()> {
+    let tasks = load_all(task_dir)?;
+    let mut selected: Vec<&TaskFile> = Vec::new();
+    for task in names {
+        let Some(i) = find(&tasks, task) else {
+            bail!(
+                "no task {task} in {} (see `looper task list`)",
+                task_dir.display()
+            );
+        };
+        if !selected.iter().any(|t| t.path == tasks[i].path) {
+            selected.push(&tasks[i]);
+        }
+    }
+    for t in selected {
+        std::fs::remove_file(&t.path)
+            .with_context(|| format!("failed to delete {}", t.path.display()))?;
+        eprintln!("deleted {}", t.path.display());
+        if t.plan.is_some()
+            && let Some(dir) = t.path.parent()
+        {
+            // Fails, and is left alone, if other tasks are still in it.
+            let _ = std::fs::remove_dir(dir);
+        }
+    }
     Ok(())
 }
 

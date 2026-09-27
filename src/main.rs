@@ -98,7 +98,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Create, list, show and run the plans in .looper/plans
+    /// Create, list, show, run and delete the plans in .looper/plans
     Plan {
         #[command(subcommand)]
         command: PlanCmd,
@@ -148,6 +148,13 @@ enum PlanCmd {
 
     /// Run every task in a plan
     Run(RunArgs),
+
+    /// Delete plans
+    Delete {
+        /// Plans to delete: names from .looper/plans, or paths to plan files
+        #[arg(required = true)]
+        plans: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -167,6 +174,13 @@ enum TaskCmd {
         /// Print directly instead of through a pager
         #[arg(long)]
         no_pager: bool,
+    },
+
+    /// Delete tasks
+    Delete {
+        /// Tasks to delete (numbers or file names from `looper task list`)
+        #[arg(required = true)]
+        tasks: Vec<String>,
     },
 
     /// Delete all tasks, or those of one plan
@@ -201,6 +215,13 @@ enum LogCmd {
         /// Print directly instead of through a pager
         #[arg(long)]
         no_pager: bool,
+    },
+
+    /// Delete the logs of runs
+    Delete {
+        /// Runs to delete (folder names from `looper log list`)
+        #[arg(required = true)]
+        runs: Vec<String>,
     },
 
     /// Delete the logs of all runs
@@ -310,7 +331,7 @@ fn plan_name(plan: &Path) -> String {
         .into_owned()
 }
 
-/// Resolve the plan argument of `looper plan run` and `show`: an existing file is used as is,
+/// Resolve the plan argument of `looper plan run`, `show` and `delete`: an existing file is used as is,
 /// anything else is looked up by name in .looper/plans.
 fn resolve_plan(looper: &Path, plan: &str) -> PathBuf {
     let path = Path::new(plan);
@@ -716,6 +737,7 @@ fn main() -> Result<()> {
                 plans::show(&resolve_plan(looper, &plan), !no_pager)
             }
             PlanCmd::Run(args) => run(looper, args),
+            PlanCmd::Delete { plans } => plans::delete(looper, &plans),
         },
         Cmd::Log { log_dir, command } => {
             let log_dir = log_dir.unwrap_or_else(|| looper.join(LOGS_DIR));
@@ -727,6 +749,7 @@ fn main() -> Result<()> {
                     detail,
                     no_pager,
                 } => logs::show(&log_dir, run.as_deref(), task, detail, !no_pager),
+                LogCmd::Delete { runs } => logs::delete(&log_dir, &runs),
                 LogCmd::Clean => logs::clean(&log_dir),
             }
         }
@@ -734,6 +757,7 @@ fn main() -> Result<()> {
             let task_dir = task_dir.unwrap_or_else(|| looper.join(TASKS_DIR));
             match command {
                 TaskCmd::List { plan } => tasks::list(&task_dir, plan.as_deref()),
+                TaskCmd::Delete { tasks } => tasks::delete(&task_dir, &tasks),
                 TaskCmd::Clean { plan } => tasks::clean(&task_dir, plan.as_deref()),
                 TaskCmd::Show { task, no_pager } => {
                     tasks::show(&task_dir, task.as_deref(), !no_pager)
