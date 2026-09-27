@@ -10,6 +10,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 mod logs;
+mod tasks;
 
 const CONFIG_FILE: &str = "looper.toml";
 /// The task text in a fresh `looper new` file; `looper run` refuses to send it.
@@ -92,6 +93,33 @@ enum Cmd {
 
         #[command(subcommand)]
         command: LogsCmd,
+    },
+
+    /// Browse the follow-up tasks Claude left in .looper/tasks
+    Tasks {
+        /// Folder with the task files
+        #[arg(long, global = true, default_value = TASKS_DIR)]
+        task_dir: PathBuf,
+
+        #[command(subcommand)]
+        command: TasksCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum TasksCmd {
+    /// List tasks, newest first
+    List,
+
+    /// Show one task or all of them
+    Show {
+        /// Task to show (a number or file name from `looper tasks list`, or a
+        /// path to a task file) [default: all tasks]
+        task: Option<String>,
+
+        /// Print directly instead of through a pager
+        #[arg(long)]
+        no_pager: bool,
     },
 }
 
@@ -490,6 +518,10 @@ fn main() -> Result<()> {
                 detail,
                 no_pager,
             } => logs::show(&log_dir, run.as_deref(), task, detail, !no_pager),
+        },
+        Cmd::Tasks { task_dir, command } => match command {
+            TasksCmd::List => tasks::list(&task_dir),
+            TasksCmd::Show { task, no_pager } => tasks::show(&task_dir, task.as_deref(), !no_pager),
         },
     }
 }

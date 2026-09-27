@@ -21,12 +21,12 @@ const ERROR_LINES: usize = 20;
 /// ANSI styling that switches itself off when stdout isn't a terminal or
 /// `NO_COLOR` is set, and on regardless when `CLICOLOR_FORCE` is set.
 #[derive(Clone, Copy)]
-struct Style {
-    color: bool,
+pub(crate) struct Style {
+    pub(crate) color: bool,
 }
 
 impl Style {
-    fn detect() -> Self {
+    pub(crate) fn detect() -> Self {
         Self {
             color: std::env::var_os("CLICOLOR_FORCE").is_some_and(|v| v != "0")
                 || (std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()),
@@ -41,22 +41,22 @@ impl Style {
         }
     }
 
-    fn bold(self, t: &str) -> String {
+    pub(crate) fn bold(self, t: &str) -> String {
         self.paint("1", t)
     }
-    fn dim(self, t: &str) -> String {
+    pub(crate) fn dim(self, t: &str) -> String {
         self.paint("2", t)
     }
-    fn red(self, t: &str) -> String {
+    pub(crate) fn red(self, t: &str) -> String {
         self.paint("31", t)
     }
     fn green(self, t: &str) -> String {
         self.paint("32", t)
     }
-    fn yellow(self, t: &str) -> String {
+    pub(crate) fn yellow(self, t: &str) -> String {
         self.paint("33", t)
     }
-    fn cyan(self, t: &str) -> String {
+    pub(crate) fn cyan(self, t: &str) -> String {
         self.paint("36", t)
     }
     fn magenta(self, t: &str) -> String {
@@ -289,7 +289,7 @@ pub fn format_duration(ms: f64) -> String {
         .join(" ")
 }
 
-fn terminal_width() -> usize {
+pub(crate) fn terminal_width() -> usize {
     (termimad::terminal_size().0 as usize).clamp(40, 120)
 }
 
@@ -373,13 +373,13 @@ fn list_tasks(run_dir: &Path, style: Style) -> Result<()> {
 }
 
 /// A table cell: its visible text (for measuring) and what to print.
-struct Cell {
+pub(crate) struct Cell {
     plain: String,
     styled: String,
 }
 
 impl Cell {
-    fn plain(text: impl Into<String>) -> Self {
+    pub(crate) fn plain(text: impl Into<String>) -> Self {
         let text = text.into();
         Self {
             styled: text.clone(),
@@ -387,7 +387,7 @@ impl Cell {
         }
     }
 
-    fn styled(plain: impl Into<String>, styled: String) -> Self {
+    pub(crate) fn styled(plain: impl Into<String>, styled: String) -> Self {
         Self {
             plain: plain.into(),
             styled,
@@ -395,7 +395,7 @@ impl Cell {
     }
 }
 
-fn print_table(style: Style, header: &[&str], rows: &[Vec<Cell>]) {
+pub(crate) fn print_table(style: Style, header: &[&str], rows: &[Vec<Cell>]) {
     let mut widths: Vec<usize> = header.iter().map(|h| h.chars().count()).collect();
     for row in rows {
         for (w, cell) in widths.iter_mut().zip(row) {
@@ -461,7 +461,7 @@ pub fn show(
 
 /// Print through `$PAGER` (default `less -FRX`) when stdout is a terminal,
 /// like git does.
-fn page(text: &str, pager: bool) -> Result<()> {
+pub(crate) fn page(text: &str, pager: bool) -> Result<()> {
     if !pager || !std::io::stdout().is_terminal() {
         print!("{text}");
         return Ok(());
