@@ -6,7 +6,7 @@ use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail};
 
-use crate::logs::{Cell, Style, page, print_table, terminal_width};
+use crate::logs::{Cell, Style, page, plural, print_table, terminal_width};
 use crate::truncate;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -97,13 +97,13 @@ impl TaskFile {
 /// like `**Priority:** HIGH` or `- Priority: \`HIGH\``.
 fn priority_value(line: &str) -> Option<&str> {
     let (key, value) = line.split_once(':')?;
-    clean(key)
+    strip_markup(key)
         .eq_ignore_ascii_case("priority")
-        .then(|| clean(value))
+        .then(|| strip_markup(value))
 }
 
 /// Strip whitespace and markdown emphasis around `s`.
-fn clean(s: &str) -> &str {
+fn strip_markup(s: &str) -> &str {
     s.trim_matches(|c: char| c.is_whitespace() || "*_`-".contains(c))
 }
 
@@ -130,6 +130,21 @@ fn load_all(task_dir: &Path) -> Result<Vec<TaskFile>> {
         .collect::<Result<Vec<_>>>()?;
     tasks.sort_by(|a, b| (b.created, &b.path).cmp(&(a.created, &a.path)));
     Ok(tasks)
+}
+
+/// Delete every task file in `task_dir`, keeping the folder itself.
+pub fn clean(task_dir: &Path) -> Result<()> {
+    let tasks = load_all(task_dir)?;
+    for t in &tasks {
+        std::fs::remove_file(&t.path)
+            .with_context(|| format!("failed to delete {}", t.path.display()))?;
+    }
+    eprintln!(
+        "deleted {} from {}",
+        plural(tasks.len(), "task"),
+        task_dir.display()
+    );
+    Ok(())
 }
 
 pub fn list(task_dir: &Path) -> Result<()> {

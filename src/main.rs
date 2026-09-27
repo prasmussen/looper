@@ -121,6 +121,9 @@ enum TasksCmd {
         #[arg(long)]
         no_pager: bool,
     },
+
+    /// Delete all tasks
+    Clean,
 }
 
 #[derive(Subcommand)]
@@ -149,6 +152,9 @@ enum LogsCmd {
         #[arg(long)]
         no_pager: bool,
     },
+
+    /// Delete the logs of all runs
+    Clean,
 }
 
 #[derive(clap::Args)]
@@ -518,9 +524,11 @@ fn main() -> Result<()> {
                 detail,
                 no_pager,
             } => logs::show(&log_dir, run.as_deref(), task, detail, !no_pager),
+            LogsCmd::Clean => logs::clean(&log_dir),
         },
         Cmd::Tasks { task_dir, command } => match command {
             TasksCmd::List => tasks::list(&task_dir),
+            TasksCmd::Clean => tasks::clean(&task_dir),
             TasksCmd::Show { task, no_pager } => tasks::show(&task_dir, task.as_deref(), !no_pager),
         },
     }

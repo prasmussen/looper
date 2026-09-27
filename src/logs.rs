@@ -293,6 +293,28 @@ pub(crate) fn terminal_width() -> usize {
     (termimad::terminal_size().0 as usize).clamp(40, 120)
 }
 
+/// Delete every run folder in `log_dir`, keeping the folder itself.
+pub fn clean(log_dir: &Path) -> Result<()> {
+    let runs = runs(log_dir)?;
+    for run in &runs {
+        std::fs::remove_dir_all(run)
+            .with_context(|| format!("failed to delete {}", run.display()))?;
+    }
+    eprintln!(
+        "deleted {} from {}",
+        plural(runs.len(), "run"),
+        log_dir.display()
+    );
+    Ok(())
+}
+
+pub(crate) fn plural(n: usize, word: &str) -> String {
+    match n {
+        1 => format!("1 {word}"),
+        n => format!("{n} {word}s"),
+    }
+}
+
 pub fn list(log_dir: &Path, run: Option<&str>) -> Result<()> {
     let style = Style::detect();
     match run {
