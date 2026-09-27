@@ -36,10 +36,14 @@ than one big commit at the end. If the project has a formatter (e.g.
 cargo fmt, prettier, gofmt, ruff format), format the files you changed
 before each commit.
 
-When you are done, run the tests and make sure they pass.
+When you are done, look for gaps or follow-ups. If one is small enough and
+fits within this task, complete it straight away instead of leaving it for
+later.
 
-Then, if there are any gaps or follow-ups, create one markdown
-file per item in .looper/tasks/. Keep each file short: a title, a line with
+Then run the tests and make sure they pass.
+
+Finally, for each gap or follow-up you did not complete, create one markdown
+file in .looper/tasks/. Keep each file short: a title, a line with
 `Priority: LOW`, `Priority: MEDIUM` or `Priority: HIGH`, and a few sentences
 describing what needs to be done and why.
 """
