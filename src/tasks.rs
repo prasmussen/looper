@@ -1,4 +1,4 @@
-//! `looper tasks list` and `looper tasks show`: read the follow-up task files
+//! `looper task list` and `looper task show`: read the follow-up task files
 //! Claude leaves in `.looper/tasks/<plan>/` (or directly in `.looper/tasks/`,
 //! for plans without `{{plan}}` in the path) and print them in a human
 //! readable form.
@@ -136,7 +136,7 @@ fn is_task_file(path: &Path) -> bool {
 }
 
 /// All task files in `task_dir` and its plan folders, newest first.
-/// `looper tasks show` numbers them in this order.
+/// `looper task show` numbers them in this order.
 fn load_all(task_dir: &Path) -> Result<Vec<TaskFile>> {
     let mut tasks = Vec::new();
     for path in read_dir(task_dir)? {
@@ -153,7 +153,7 @@ fn load_all(task_dir: &Path) -> Result<Vec<TaskFile>> {
     Ok(tasks)
 }
 
-/// All task files with their number from `looper tasks list`, only those of
+/// All task files with their number from `looper task list`, only those of
 /// `plan` if given. The numbers stay the same with or without `plan`.
 fn load_numbered(task_dir: &Path, plan: Option<&str>) -> Result<Vec<(usize, TaskFile)>> {
     Ok(load_all(task_dir)?
@@ -224,7 +224,7 @@ pub fn list(task_dir: &Path, plan: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Show one task (a number from `looper tasks list`, a file name, or a path),
+/// Show one task (a number from `looper task list`, a file name, or a path),
 /// or all of them.
 pub fn show(task_dir: &Path, task: Option<&str>, pager: bool) -> Result<()> {
     let tasks = load_all(task_dir)?;
@@ -255,7 +255,7 @@ pub fn show(task_dir: &Path, task: Option<&str>, pager: bool) -> Result<()> {
                 );
             }
             None => bail!(
-                "no task {task} in {} (see `looper tasks list`)",
+                "no task {task} in {} (see `looper task list`)",
                 task_dir.display()
             ),
         },
@@ -263,7 +263,7 @@ pub fn show(task_dir: &Path, task: Option<&str>, pager: bool) -> Result<()> {
     page(&out, pager)
 }
 
-/// Index of a task given as a number from `looper tasks list`, a file name
+/// Index of a task given as a number from `looper task list`, a file name
 /// (optionally as `plan/name`) or a path.
 fn find(tasks: &[TaskFile], task: &str) -> Option<usize> {
     if let Ok(n) = task.parse::<usize>()

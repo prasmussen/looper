@@ -1,4 +1,4 @@
-//! `looper plans list` and `looper plans show`: show the plan files in
+//! `looper plan list` and `looper plan show`: show the plan files in
 //! `.looper/plans/`.
 
 use std::path::{Path, PathBuf};

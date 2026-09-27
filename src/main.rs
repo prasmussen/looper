@@ -18,7 +18,7 @@ mod status;
 mod tasks;
 mod title;
 
-/// The task text in a fresh `looper new` file; `looper plans run` refuses to send it.
+/// The task text in a fresh `looper plan new` file; `looper plan run` refuses to send it.
 const PLACEHOLDER: &str = "REPLACE ME";
 const LOOPER_DIR: &str = ".looper";
 // Inside the .looper folder.
@@ -31,12 +31,12 @@ const PLAN_VAR: &str = "{{plan}}";
 
 /// The top of `.looper/config.toml`, left out of the plans copied from it.
 const DEFAULTS_HEADER: &str = "\
-# Defaults for new plans: `looper new` starts every plan in .looper/plans/
+# Defaults for new plans: `looper plan new` starts every plan in .looper/plans/
 # with a copy of this file. Changing it doesn't change existing plans.
 
 ";
 
-/// The first `.looper/config.toml`, after `DEFAULTS_HEADER`. `looper new`
+/// The first `.looper/config.toml`, after `DEFAULTS_HEADER`. `looper plan new`
 /// starts every plan with a copy of that file, followed by `TASKS_TEMPLATE`.
 const DEFAULTS_TEMPLATE: &str = r#"# Flags passed to every `claude` call. The prompt is sent on stdin. Each flag
 # and each value is its own string; keep a flag and its value on the same line.
@@ -98,41 +98,41 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Create, list, show and run the plans in .looper/plans
+    Plan {
+        #[command(subcommand)]
+        command: PlanCmd,
+    },
+
+    /// Browse the logs of earlier runs
+    Log {
+        /// Folder with the logs [default: .looper/logs]
+        #[arg(long, global = true)]
+        log_dir: Option<PathBuf>,
+
+        #[command(subcommand)]
+        command: LogCmd,
+    },
+
+    /// Browse the follow-up tasks Claude left in .looper/tasks
+    Task {
+        /// Folder with the task files [default: .looper/tasks]
+        #[arg(long, global = true)]
+        task_dir: Option<PathBuf>,
+
+        #[command(subcommand)]
+        command: TaskCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum PlanCmd {
     /// Create a plan in .looper/plans/<NAME>.toml from a template
     New {
         /// Name of the plan
         name: String,
     },
 
-    /// List and run the plans in .looper/plans
-    Plans {
-        #[command(subcommand)]
-        command: PlansCmd,
-    },
-
-    /// Browse the logs of earlier runs
-    Logs {
-        /// Folder with the logs [default: .looper/logs]
-        #[arg(long, global = true)]
-        log_dir: Option<PathBuf>,
-
-        #[command(subcommand)]
-        command: LogsCmd,
-    },
-
-    /// Browse the follow-up tasks Claude left in .looper/tasks
-    Tasks {
-        /// Folder with the task files [default: .looper/tasks]
-        #[arg(long, global = true)]
-        task_dir: Option<PathBuf>,
-
-        #[command(subcommand)]
-        command: TasksCmd,
-    },
-}
-
-#[derive(Subcommand)]
-enum PlansCmd {
     /// List plans, most recently changed first
     List,
 
@@ -151,7 +151,7 @@ enum PlansCmd {
 }
 
 #[derive(Subcommand)]
-enum TasksCmd {
+enum TaskCmd {
     /// List tasks, newest first
     List {
         /// Only list the tasks of this plan
@@ -160,7 +160,7 @@ enum TasksCmd {
 
     /// Show one task or all of them
     Show {
-        /// Task to show (a number or file name from `looper tasks list`, or a
+        /// Task to show (a number or file name from `looper task list`, or a
         /// path to a task file) [default: all tasks]
         task: Option<String>,
 
@@ -177,16 +177,16 @@ enum TasksCmd {
 }
 
 #[derive(Subcommand)]
-enum LogsCmd {
+enum LogCmd {
     /// List runs, newest first, or the tasks of one run
     List {
-        /// Run to list the tasks of (a folder name from `looper logs list`)
+        /// Run to list the tasks of (a folder name from `looper log list`)
         run: Option<String>,
     },
 
     /// Show a readable transcript of a run or a single task
     Show {
-        /// Run to show (a folder name from `looper logs list`, or a path to a
+        /// Run to show (a folder name from `looper log list`, or a path to a
         /// run folder or .jsonl file) [default: the latest run]
         run: Option<String>,
 
@@ -310,7 +310,7 @@ fn plan_name(plan: &Path) -> String {
         .into_owned()
 }
 
-/// Resolve the plan argument of `looper plans run` and `show`: an existing file is used as is,
+/// Resolve the plan argument of `looper plan run` and `show`: an existing file is used as is,
 /// anything else is looked up by name in .looper/plans.
 fn resolve_plan(looper: &Path, plan: &str) -> PathBuf {
     let path = Path::new(plan);
@@ -342,7 +342,7 @@ fn new(looper: &Path, name: &str) -> Result<()> {
     };
     file.write_all(plan_template(looper)?.as_bytes())?;
     eprintln!("created {}", path.display());
-    eprintln!("edit it, then start it with: looper plans run {name}");
+    eprintln!("edit it, then start it with: looper plan run {name}");
     Ok(())
 }
 
@@ -709,33 +709,33 @@ fn main() -> Result<()> {
     let looper = find_looper_dir()?;
     let looper = looper.as_path();
     match cli.command {
-        Cmd::New { name } => new(looper, &name),
-        Cmd::Plans { command } => match command {
-            PlansCmd::List => plans::list(&looper.join(PLANS_DIR)),
-            PlansCmd::Show { plan, no_pager } => {
+        Cmd::Plan { command } => match command {
+            PlanCmd::New { name } => new(looper, &name),
+            PlanCmd::List => plans::list(&looper.join(PLANS_DIR)),
+            PlanCmd::Show { plan, no_pager } => {
                 plans::show(&resolve_plan(looper, &plan), !no_pager)
             }
-            PlansCmd::Run(args) => run(looper, args),
+            PlanCmd::Run(args) => run(looper, args),
         },
-        Cmd::Logs { log_dir, command } => {
+        Cmd::Log { log_dir, command } => {
             let log_dir = log_dir.unwrap_or_else(|| looper.join(LOGS_DIR));
             match command {
-                LogsCmd::List { run } => logs::list(&log_dir, run.as_deref()),
-                LogsCmd::Show {
+                LogCmd::List { run } => logs::list(&log_dir, run.as_deref()),
+                LogCmd::Show {
                     run,
                     task,
                     detail,
                     no_pager,
                 } => logs::show(&log_dir, run.as_deref(), task, detail, !no_pager),
-                LogsCmd::Clean => logs::clean(&log_dir),
+                LogCmd::Clean => logs::clean(&log_dir),
             }
         }
-        Cmd::Tasks { task_dir, command } => {
+        Cmd::Task { task_dir, command } => {
             let task_dir = task_dir.unwrap_or_else(|| looper.join(TASKS_DIR));
             match command {
-                TasksCmd::List { plan } => tasks::list(&task_dir, plan.as_deref()),
-                TasksCmd::Clean { plan } => tasks::clean(&task_dir, plan.as_deref()),
-                TasksCmd::Show { task, no_pager } => {
+                TaskCmd::List { plan } => tasks::list(&task_dir, plan.as_deref()),
+                TaskCmd::Clean { plan } => tasks::clean(&task_dir, plan.as_deref()),
+                TaskCmd::Show { task, no_pager } => {
                     tasks::show(&task_dir, task.as_deref(), !no_pager)
                 }
             }

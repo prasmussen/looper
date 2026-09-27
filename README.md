@@ -23,9 +23,9 @@ This builds a release binary and installs it to `~/.local/bin/looper`.
 ## Usage
 
 ```sh
-looper new NAME                   # create .looper/plans/NAME.toml
+looper plan new NAME              # create .looper/plans/NAME.toml
 $EDITOR .looper/plans/NAME.toml   # write your tasks
-looper plans run NAME             # run them, one claude call per task
+looper plan run NAME              # run them, one claude call per task
 ```
 
 ### Plan files
@@ -56,12 +56,12 @@ tasks = [
 ]
 ```
 
-`looper new` starts each plan with a copy of `.looper/config.toml`, which is
-created with the defaults the first time `.looper/` is made. Edit it to change
-the `claude_args`, `prefix` and `suffix` of future plans; existing plans keep
-their own copy. The defaults include a suffix that asks Claude to work without
+`looper plan new` starts each plan with a copy of `.looper/config.toml`, which
+is created with the defaults the first time `.looper/` is made. Edit it to
+change the `claude_args`, `prefix` and `suffix` of future plans; existing plans
+keep their own copy. The defaults include a suffix that asks Claude to work without
 asking questions, commit as it goes, run the tests, and write any follow-ups it
-didn't finish as markdown files in `.looper/tasks/{{plan}}/`. `looper plans run`
+didn't finish as markdown files in `.looper/tasks/{{plan}}/`. `looper plan run`
 refuses to start while a task still says `REPLACE ME`.
 
 In the prefix, suffix and tasks, `{{plan}}` is replaced with the plan's name
@@ -71,9 +71,9 @@ own and runs of different plans don't mix.
 ### Running
 
 ```sh
-looper plans list             # plans, most recently changed first
-looper plans show PLAN        # a plan's claude flags, prefix, tasks and suffix
-looper plans run PLAN         # run every task in a plan
+looper plan list              # plans, most recently changed first
+looper plan show PLAN         # a plan's claude flags, prefix, tasks and suffix
+looper plan run PLAN          # run every task in a plan
 ```
 
 `PLAN` is a plan name from `.looper/plans/`, or a path to a plan file.
@@ -99,20 +99,20 @@ Each run gets its own folder, `.looper/logs/<plan>-<timestamp>/`, with one
 looper's own start, title and exit events.
 
 ```sh
-looper logs list              # runs, newest first
-looper logs list RUN          # tasks of one run
-looper logs show [RUN]        # transcript of a run (default: the latest)
-looper logs show --task 2     # only task 2
-looper logs show --detail minimal|compact|normal|full
-looper logs clean             # delete all logs
+looper log list               # runs, newest first
+looper log list RUN           # tasks of one run
+looper log show [RUN]         # transcript of a run (default: the latest)
+looper log show --task 2      # only task 2
+looper log show --detail minimal|compact|normal|full
+looper log clean              # delete all logs
 ```
 
 ### Follow-up tasks
 
 ```sh
-looper tasks list [PLAN]      # follow-ups Claude wrote, newest first
-looper tasks show [TASK]      # one task (number, file name or plan/file) or all
-looper tasks clean [PLAN]     # delete them all, or those of one plan
+looper task list [PLAN]       # follow-ups Claude wrote, newest first
+looper task show [TASK]       # one task (number, file name or plan/file) or all
+looper task clean [PLAN]      # delete them all, or those of one plan
 ```
 
 Tasks are read from `.looper/tasks/<plan>/`, and from `.looper/tasks/` itself
@@ -128,8 +128,8 @@ terminal; pass `--no-pager` to print directly. Colors follow `NO_COLOR` and
 
 Every command uses the `.looper/` folder in the current directory or the
 nearest parent directory that has one, so you can run looper from anywhere in
-the project. Without one, `looper new` creates it in the current directory.
-`looper plans run` starts Claude in the folder that holds `.looper/`.
+the project. Without one, `looper plan new` creates it in the current directory.
+`looper plan run` starts Claude in the folder that holds `.looper/`.
 
 `.looper/` gets a `.gitignore` that ignores everything in it, so Claude's
 commits never pick up plans, logs or follow-up tasks. A custom `--log-dir` gets

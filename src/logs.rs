@@ -1,5 +1,5 @@
-//! `looper logs list` and `looper logs show`: read the `.jsonl` transcripts
-//! written by `looper plans run` and print them in a human readable form.
+//! `looper log list` and `looper log show`: read the `.jsonl` transcripts
+//! written by `looper plan run` and print them in a human readable form.
 
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write as _};
@@ -72,7 +72,7 @@ impl Style {
     }
 }
 
-/// How much of a transcript `looper logs show` prints. Claude's own text is
+/// How much of a transcript `looper log show` prints. Claude's own text is
 /// always shown in full.
 #[derive(Clone, Copy, PartialEq, Default, clap::ValueEnum)]
 pub enum Detail {
@@ -258,7 +258,7 @@ fn resolve_run(log_dir: &Path, run: Option<&str>) -> Result<PathBuf> {
         return Ok(by_path);
     }
     bail!(
-        "no run named {run} in {} (see `looper logs list`)",
+        "no run named {run} in {} (see `looper log list`)",
         log_dir.display()
     )
 }
@@ -577,8 +577,8 @@ pub(crate) fn page(text: &str, pager: bool) -> Result<()> {
     Ok(())
 }
 
-/// Renders claude's events as they arrive during `looper plans run`, in the same
-/// format as `looper logs show --detail minimal`.
+/// Renders claude's events as they arrive during `looper plan run`, in the same
+/// format as `looper log show --detail minimal`.
 pub struct LiveRenderer {
     renderer: Renderer,
     /// How much of `renderer.out` has been printed. The output is kept so
