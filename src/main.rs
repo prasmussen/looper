@@ -21,10 +21,11 @@ mod title;
 /// The task text in a fresh `looper new` file; `looper plans run` refuses to send it.
 const PLACEHOLDER: &str = "REPLACE ME";
 const LOOPER_DIR: &str = ".looper";
-const PLANS_DIR: &str = ".looper/plans";
-const TASKS_DIR: &str = ".looper/tasks";
-const LOGS_DIR: &str = ".looper/logs";
-const DEFAULTS_FILE: &str = ".looper/config.toml";
+// Inside the .looper folder.
+const PLANS_DIR: &str = "plans";
+const TASKS_DIR: &str = "tasks";
+const LOGS_DIR: &str = "logs";
+const DEFAULTS_FILE: &str = "config.toml";
 
 /// The top of `.looper/config.toml`, left out of the plans copied from it.
 const DEFAULTS_HEADER: &str = "\
@@ -108,9 +109,9 @@ enum Cmd {
 
     /// Browse the logs of earlier runs
     Logs {
-        /// Folder with the logs
-        #[arg(long, global = true, default_value = LOGS_DIR)]
-        log_dir: PathBuf,
+        /// Folder with the logs [default: .looper/logs]
+        #[arg(long, global = true)]
+        log_dir: Option<PathBuf>,
 
         #[command(subcommand)]
         command: LogsCmd,
@@ -118,9 +119,9 @@ enum Cmd {
 
     /// Browse the follow-up tasks Claude left in .looper/tasks
     Tasks {
-        /// Folder with the task files
-        #[arg(long, global = true, default_value = TASKS_DIR)]
-        task_dir: PathBuf,
+        /// Folder with the task files [default: .looper/tasks]
+        #[arg(long, global = true)]
+        task_dir: Option<PathBuf>,
 
         #[command(subcommand)]
         command: TasksCmd,
@@ -254,41 +255,54 @@ impl Config {
     }
 }
 
+/// The `.looper` folder of the current directory or the nearest parent that
+/// has one, as a relative path like `../../.looper`, so paths in messages stay
+/// short. Without one, `.looper` in the current directory.
+fn find_looper_dir() -> Result<PathBuf> {
+    let cwd = std::env::current_dir().context("failed to get the current directory")?;
+    let mut path = PathBuf::new();
+    for dir in cwd.ancestors() {
+        if dir.join(LOOPER_DIR).is_dir() {
+            return Ok(path.join(LOOPER_DIR));
+        }
+        path.push("..");
+    }
+    Ok(PathBuf::from(LOOPER_DIR))
+}
+
+/// The project folder that holds `looper`, where claude runs.
+fn project_dir(looper: &Path) -> &Path {
+    looper.parent().unwrap_or(Path::new(""))
+}
+
 /// The path of plan `name` in .looper/plans.
-fn plan_path(name: &str) -> PathBuf {
-    Path::new(PLANS_DIR).join(format!("{name}.toml"))
+fn plan_path(looper: &Path, name: &str) -> PathBuf {
+    looper.join(PLANS_DIR).join(format!("{name}.toml"))
 }
 
 /// Resolve the plan argument of `looper plans run`: an existing file is used as is,
 /// anything else is looked up by name in .looper/plans.
-fn resolve_plan(plan: &str) -> PathBuf {
+fn resolve_plan(looper: &Path, plan: &str) -> PathBuf {
     let path = Path::new(plan);
     if path.is_file() {
         path.to_path_buf()
     } else {
-        plan_path(plan)
+        plan_path(looper, plan)
     }
 }
 
-fn new(name: &str) -> Result<()> {
+fn new(looper: &Path, name: &str) -> Result<()> {
     if name.is_empty() || name.contains(['/', '\\']) || name.starts_with('.') {
         bail!("invalid plan name {name:?}; use a plain name like `refactor`");
     }
-    let cwd = std::env::current_dir().context("failed to get the current directory")?;
-    if let Some(dir) = cwd.ancestors().find(|dir| dir.ends_with(LOOPER_DIR)) {
-        bail!(
-            "{} is inside {}, run looper new from the project root instead",
-            cwd.display(),
-            dir.display()
-        );
-    }
-    create_looper_dir()?;
+    create_looper_dir(looper)?;
     for dir in [PLANS_DIR, TASKS_DIR, LOGS_DIR] {
-        std::fs::create_dir_all(dir)
-            .with_context(|| format!("failed to create directory {dir}"))?;
+        let dir = looper.join(dir);
+        std::fs::create_dir_all(&dir)
+            .with_context(|| format!("failed to create directory {}", dir.display()))?;
     }
 
-    let path = plan_path(name);
+    let path = plan_path(looper, name);
     let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
         Ok(file) => file,
         Err(e) if e.kind() == ErrorKind::AlreadyExists => {
@@ -296,7 +310,7 @@ fn new(name: &str) -> Result<()> {
         }
         Err(e) => return Err(e).context(format!("failed to create {}", path.display())),
     };
-    file.write_all(plan_template()?.as_bytes())?;
+    file.write_all(plan_template(looper)?.as_bytes())?;
     eprintln!("created {}", path.display());
     eprintln!("edit it, then start it with: looper plans run {name}");
     Ok(())
@@ -304,11 +318,12 @@ fn new(name: &str) -> Result<()> {
 
 /// A new plan: the text of `.looper/config.toml`, comments and all but its
 /// header, followed by a placeholder task.
-fn plan_template() -> Result<String> {
-    let defaults = std::fs::read_to_string(DEFAULTS_FILE)
-        .with_context(|| format!("failed to read {DEFAULTS_FILE}"))?;
+fn plan_template(looper: &Path) -> Result<String> {
+    let path = looper.join(DEFAULTS_FILE);
+    let defaults = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
     toml::from_str::<Defaults>(&defaults)
-        .with_context(|| format!("failed to parse {DEFAULTS_FILE}"))?;
+        .with_context(|| format!("failed to parse {}", path.display()))?;
     let defaults = defaults.strip_prefix(DEFAULTS_HEADER).unwrap_or(&defaults);
     Ok(format!("{}\n\n{TASKS_TEMPLATE}", defaults.trim_end()))
 }
@@ -443,10 +458,10 @@ fn first_line(s: &str) -> &str {
 
 /// Create `<base>/<task file stem>-<timestamp>/`, so runs never overwrite each
 /// other.
-fn create_run_log_dir(base: &Path, config: &Path) -> Result<PathBuf> {
+fn create_run_log_dir(looper: &Path, base: &Path, config: &Path) -> Result<PathBuf> {
     let stem = config.file_stem().unwrap_or_default().to_string_lossy();
     let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
-    create_logs_dir(base)?;
+    create_logs_dir(looper, base)?;
 
     // Add -2, -3, ... if a run already started in the same second.
     let mut dir = base.join(format!("{stem}-{timestamp}"));
@@ -470,13 +485,13 @@ fn create_run_log_dir(base: &Path, config: &Path) -> Result<PathBuf> {
 /// Create the logs directory, git-ignored so Claude's commits don't pick up
 /// the logs: through `.looper/.gitignore` for the default location, or a
 /// `.gitignore` of its own for a custom `--log-dir`.
-fn create_logs_dir(dir: &Path) -> Result<()> {
-    if dir.starts_with(LOOPER_DIR) {
-        create_looper_dir()?;
+fn create_logs_dir(looper: &Path, dir: &Path) -> Result<()> {
+    if dir.starts_with(looper) {
+        create_looper_dir(looper)?;
     }
     std::fs::create_dir_all(dir)
         .with_context(|| format!("failed to create log directory {}", dir.display()))?;
-    if !dir.starts_with(LOOPER_DIR) {
+    if !dir.starts_with(looper) {
         write_gitignore(dir)?;
     }
     Ok(())
@@ -485,22 +500,19 @@ fn create_logs_dir(dir: &Path) -> Result<()> {
 /// Create `.looper/` with a `.gitignore` that ignores everything in it, so
 /// Claude's commits don't pick up logs or follow-up tasks, and a
 /// `config.toml` with the defaults for new plans.
-fn create_looper_dir() -> Result<()> {
-    std::fs::create_dir_all(LOOPER_DIR)
-        .with_context(|| format!("failed to create directory {LOOPER_DIR}"))?;
-    write_gitignore(Path::new(LOOPER_DIR))?;
-    match OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(DEFAULTS_FILE)
-    {
+fn create_looper_dir(looper: &Path) -> Result<()> {
+    std::fs::create_dir_all(looper)
+        .with_context(|| format!("failed to create directory {}", looper.display()))?;
+    write_gitignore(looper)?;
+    let path = looper.join(DEFAULTS_FILE);
+    match OpenOptions::new().write(true).create_new(true).open(&path) {
         Ok(mut file) => {
             file.write_all(format!("{DEFAULTS_HEADER}{DEFAULTS_TEMPLATE}").as_bytes())?;
-            eprintln!("created {DEFAULTS_FILE} (defaults for new plans)");
+            eprintln!("created {} (defaults for new plans)", path.display());
             Ok(())
         }
         Err(e) if e.kind() == ErrorKind::AlreadyExists => Ok(()),
-        Err(e) => Err(e).context(format!("failed to create {DEFAULTS_FILE}")),
+        Err(e) => Err(e).context(format!("failed to create {}", path.display())),
     }
 }
 
@@ -514,8 +526,8 @@ fn write_gitignore(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run(args: RunArgs) -> Result<()> {
-    let plan = resolve_plan(&args.plan);
+fn run(looper: &Path, args: RunArgs) -> Result<()> {
+    let plan = resolve_plan(looper, &args.plan);
     let config = Config::load(&plan)?;
     if config.tasks.is_empty() {
         bail!("no tasks defined in {}", plan.display());
@@ -540,8 +552,8 @@ fn run(args: RunArgs) -> Result<()> {
 
     let log_dir = match (&args.log_dir, args.no_log || args.dry_run) {
         (_, true) => None,
-        (Some(base), false) => Some(create_run_log_dir(base, &plan)?),
-        (None, false) => Some(create_run_log_dir(Path::new(LOGS_DIR), &plan)?),
+        (Some(base), false) => Some(create_run_log_dir(looper, base, &plan)?),
+        (None, false) => Some(create_run_log_dir(looper, &looper.join(LOGS_DIR), &plan)?),
     };
     if let Some(log_dir) = &log_dir {
         status.err(&format!("==> logging to {}", log_dir.display()));
@@ -567,6 +579,11 @@ fn run(args: RunArgs) -> Result<()> {
 
         let mut cmd = Command::new("claude");
         cmd.args(&config.claude_args);
+        // Run from the project folder, so paths like .looper/tasks/ in the
+        // prompt point at the right place.
+        if !project_dir(looper).as_os_str().is_empty() {
+            cmd.current_dir(project_dir(looper));
+        }
         let task_started = Instant::now();
         let (exit, stats) = match &log_dir {
             Some(log_dir) => {
@@ -649,26 +666,37 @@ fn format_elapsed(started: Instant) -> String {
 }
 
 fn main() -> Result<()> {
-    match Cli::parse().command {
-        Cmd::New { name } => new(&name),
+    let cli = Cli::parse();
+    let looper = find_looper_dir()?;
+    let looper = looper.as_path();
+    match cli.command {
+        Cmd::New { name } => new(looper, &name),
         Cmd::Plans { command } => match command {
-            PlansCmd::List => plans::list(Path::new(PLANS_DIR)),
-            PlansCmd::Run(args) => run(args),
+            PlansCmd::List => plans::list(&looper.join(PLANS_DIR)),
+            PlansCmd::Run(args) => run(looper, args),
         },
-        Cmd::Logs { log_dir, command } => match command {
-            LogsCmd::List { run } => logs::list(&log_dir, run.as_deref()),
-            LogsCmd::Show {
-                run,
-                task,
-                detail,
-                no_pager,
-            } => logs::show(&log_dir, run.as_deref(), task, detail, !no_pager),
-            LogsCmd::Clean => logs::clean(&log_dir),
-        },
-        Cmd::Tasks { task_dir, command } => match command {
-            TasksCmd::List => tasks::list(&task_dir),
-            TasksCmd::Clean => tasks::clean(&task_dir),
-            TasksCmd::Show { task, no_pager } => tasks::show(&task_dir, task.as_deref(), !no_pager),
-        },
+        Cmd::Logs { log_dir, command } => {
+            let log_dir = log_dir.unwrap_or_else(|| looper.join(LOGS_DIR));
+            match command {
+                LogsCmd::List { run } => logs::list(&log_dir, run.as_deref()),
+                LogsCmd::Show {
+                    run,
+                    task,
+                    detail,
+                    no_pager,
+                } => logs::show(&log_dir, run.as_deref(), task, detail, !no_pager),
+                LogsCmd::Clean => logs::clean(&log_dir),
+            }
+        }
+        Cmd::Tasks { task_dir, command } => {
+            let task_dir = task_dir.unwrap_or_else(|| looper.join(TASKS_DIR));
+            match command {
+                TasksCmd::List => tasks::list(&task_dir),
+                TasksCmd::Clean => tasks::clean(&task_dir),
+                TasksCmd::Show { task, no_pager } => {
+                    tasks::show(&task_dir, task.as_deref(), !no_pager)
+                }
+            }
+        }
     }
 }

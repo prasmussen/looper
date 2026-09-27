@@ -112,6 +112,11 @@ terminal; pass `--no-pager` to print directly. Colors follow `NO_COLOR` and
 
 ## The .looper folder
 
+Every command uses the `.looper/` folder in the current directory or the
+nearest parent directory that has one, so you can run looper from anywhere in
+the project. Without one, `looper new` creates it in the current directory.
+`looper plans run` starts Claude in the folder that holds `.looper/`.
+
 `.looper/` gets a `.gitignore` that ignores everything in it, so Claude's
 commits never pick up plans, logs or follow-up tasks. A custom `--log-dir` gets
 its own `.gitignore` for the same reason.
