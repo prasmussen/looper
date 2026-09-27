@@ -24,8 +24,18 @@ const LOOPER_DIR: &str = ".looper";
 const PLANS_DIR: &str = ".looper/plans";
 const TASKS_DIR: &str = ".looper/tasks";
 const LOGS_DIR: &str = ".looper/logs";
+const DEFAULTS_FILE: &str = ".looper/config.toml";
 
-const TEMPLATE: &str = r#"# Flags passed to every `claude` call. The prompt is sent on stdin. Each flag
+/// The top of `.looper/config.toml`, left out of the plans copied from it.
+const DEFAULTS_HEADER: &str = "\
+# Defaults for new plans: `looper new` starts every plan in .looper/plans/
+# with a copy of this file. Changing it doesn't change existing plans.
+
+";
+
+/// The first `.looper/config.toml`, after `DEFAULTS_HEADER`. `looper new`
+/// starts every plan with a copy of that file, followed by `TASKS_TEMPLATE`.
+const DEFAULTS_TEMPLATE: &str = r#"# Flags passed to every `claude` call. The prompt is sent on stdin. Each flag
 # and each value is its own string; keep a flag and its value on the same line.
 claude_args = [
   "-p",
@@ -60,8 +70,10 @@ file in .looper/tasks/. Keep each file short: a title, a line with
 describing what needs to be done and why. The .looper/ folder is
 git-ignored on purpose; don't commit these files.
 """
+"#;
 
-# Each task becomes one `claude` call: prefix + task + suffix.
+/// The end of every new plan, after the defaults from `.looper/config.toml`.
+const TASKS_TEMPLATE: &str = r#"# Each task becomes one `claude` call: prefix + task + suffix.
 # Tasks run in order, one at a time. Each task starts with a fresh context,
 # without the conversations of earlier tasks, so keep work that needs the same
 # context together in one task.
@@ -199,6 +211,20 @@ struct RunArgs {
     dry_run: bool,
 }
 
+/// The settings `.looper/config.toml` may hold; everything a plan has except
+/// its tasks.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)] // Only parsed to check the file before copying it.
+struct Defaults {
+    #[serde(default)]
+    prefix: String,
+    #[serde(default)]
+    suffix: String,
+    #[serde(default)]
+    claude_args: Vec<String>,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
@@ -270,10 +296,21 @@ fn new(name: &str) -> Result<()> {
         }
         Err(e) => return Err(e).context(format!("failed to create {}", path.display())),
     };
-    file.write_all(TEMPLATE.as_bytes())?;
+    file.write_all(plan_template()?.as_bytes())?;
     eprintln!("created {}", path.display());
     eprintln!("edit it, then start it with: looper plans run {name}");
     Ok(())
+}
+
+/// A new plan: the text of `.looper/config.toml`, comments and all but its
+/// header, followed by a placeholder task.
+fn plan_template() -> Result<String> {
+    let defaults = std::fs::read_to_string(DEFAULTS_FILE)
+        .with_context(|| format!("failed to read {DEFAULTS_FILE}"))?;
+    toml::from_str::<Defaults>(&defaults)
+        .with_context(|| format!("failed to parse {DEFAULTS_FILE}"))?;
+    let defaults = defaults.strip_prefix(DEFAULTS_HEADER).unwrap_or(&defaults);
+    Ok(format!("{}\n\n{TASKS_TEMPLATE}", defaults.trim_end()))
 }
 
 /// Start claude and send it the prompt on stdin. The prompt isn't passed as an
@@ -446,11 +483,25 @@ fn create_logs_dir(dir: &Path) -> Result<()> {
 }
 
 /// Create `.looper/` with a `.gitignore` that ignores everything in it, so
-/// Claude's commits don't pick up logs or follow-up tasks.
+/// Claude's commits don't pick up logs or follow-up tasks, and a
+/// `config.toml` with the defaults for new plans.
 fn create_looper_dir() -> Result<()> {
     std::fs::create_dir_all(LOOPER_DIR)
         .with_context(|| format!("failed to create directory {LOOPER_DIR}"))?;
-    write_gitignore(Path::new(LOOPER_DIR))
+    write_gitignore(Path::new(LOOPER_DIR))?;
+    match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(DEFAULTS_FILE)
+    {
+        Ok(mut file) => {
+            file.write_all(format!("{DEFAULTS_HEADER}{DEFAULTS_TEMPLATE}").as_bytes())?;
+            eprintln!("created {DEFAULTS_FILE} (defaults for new plans)");
+            Ok(())
+        }
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(e).context(format!("failed to create {DEFAULTS_FILE}")),
+    }
 }
 
 /// Put a `.gitignore` that ignores everything in `dir`, unless one exists.

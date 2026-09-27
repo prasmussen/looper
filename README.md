@@ -52,7 +52,10 @@ tasks = [
 ]
 ```
 
-`looper new` writes a template with a suffix that asks Claude to work without
+`looper new` starts each plan with a copy of `.looper/config.toml`, which is
+created with the defaults the first time `.looper/` is made. Edit it to change
+the `claude_args`, `prefix` and `suffix` of future plans; existing plans keep
+their own copy. The defaults include a suffix that asks Claude to work without
 asking questions, commit as it goes, run the tests, and write any follow-ups it
 didn't finish as markdown files in `.looper/tasks/`. `looper plans run` refuses
 to start while a task still says `REPLACE ME`.
