@@ -6,7 +6,9 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
+
+mod logs;
 
 const CONFIG_FILE: &str = "looper.toml";
 const TASKS_DIR: &str = ".looper/tasks";
@@ -79,6 +81,45 @@ enum Cmd {
 
     /// Run every task in a looper.toml
     Run(RunArgs),
+
+    /// Browse the logs of earlier runs
+    Logs {
+        /// Folder with the logs
+        #[arg(long, global = true, default_value = LOGS_DIR)]
+        log_dir: PathBuf,
+
+        #[command(subcommand)]
+        command: LogsCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum LogsCmd {
+    /// List runs, newest first, or the tasks of one run
+    List {
+        /// Run to list the tasks of (a folder name from `looper logs list`)
+        run: Option<String>,
+    },
+
+    /// Show a readable transcript of a run or a single task
+    Show {
+        /// Run to show (a folder name from `looper logs list`, or a path to a
+        /// run folder or .jsonl file) [default: the latest run]
+        run: Option<String>,
+
+        /// Only show this task number
+        #[arg(long)]
+        task: Option<usize>,
+
+        /// Show everything: full prompt, full tool output, thinking, and raw
+        /// tool inputs
+        #[arg(long)]
+        full: bool,
+
+        /// Print directly instead of through a pager
+        #[arg(long)]
+        no_pager: bool,
+    },
 }
 
 #[derive(clap::Args)]
@@ -173,10 +214,18 @@ fn spawn_claude(mut cmd: Command, prompt: &str) -> Result<Child> {
 }
 
 /// Run claude with stream-json output, writing every event to `log_path` and
-/// printing a readable version of the conversation to the terminal.
-fn run_logged(mut cmd: Command, prompt: &str, log_path: &Path) -> Result<ExitStatus> {
+/// printing a readable version of the conversation to the terminal. The log
+/// starts with a looper `start` event (`header`) and ends with an `exit` event,
+/// so it records what was asked and how claude exited.
+fn run_logged(
+    mut cmd: Command,
+    prompt: &str,
+    header: Value,
+    log_path: &Path,
+) -> Result<ExitStatus> {
     let mut log = File::create(log_path)
         .with_context(|| format!("failed to create log file {}", log_path.display()))?;
+    writeln!(log, "{header}")?;
 
     cmd.args(["--output-format", "stream-json", "--verbose"])
         .stdout(Stdio::piped());
@@ -192,7 +241,15 @@ fn run_logged(mut cmd: Command, prompt: &str, log_path: &Path) -> Result<ExitSta
         }
     }
 
-    Ok(child.wait()?)
+    let status = child.wait()?;
+    let exit = json!({
+        "type": "looper",
+        "event": "exit",
+        "success": status.success(),
+        "exit_code": status.code(),
+    });
+    writeln!(log, "{exit}")?;
+    Ok(status)
 }
 
 fn print_event(event: &Value) {
@@ -310,7 +367,17 @@ fn run(args: RunArgs) -> Result<()> {
         let status = match &log_dir {
             Some(log_dir) => {
                 let log_path = log_dir.join(format!("task-{n:02}.jsonl"));
-                run_logged(cmd, &prompt, &log_path)?
+                let header = json!({
+                    "type": "looper",
+                    "event": "start",
+                    "task": n,
+                    "total": total,
+                    "task_file": args.config.display().to_string(),
+                    "task_text": task.trim(),
+                    "prompt": prompt,
+                    "started_at": chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                });
+                run_logged(cmd, &prompt, header, &log_path)?
             }
             None => spawn_claude(cmd, &prompt)?.wait()?,
         };
@@ -339,5 +406,14 @@ fn main() -> Result<()> {
     match Cli::parse().command {
         Cmd::New { path } => new(&path),
         Cmd::Run(args) => run(args),
+        Cmd::Logs { log_dir, command } => match command {
+            LogsCmd::List { run } => logs::list(&log_dir, run.as_deref()),
+            LogsCmd::Show {
+                run,
+                task,
+                full,
+                no_pager,
+            } => logs::show(&log_dir, run.as_deref(), task, full, !no_pager),
+        },
     }
 }
