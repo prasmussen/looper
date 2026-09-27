@@ -215,6 +215,14 @@ impl Config {
 }
 
 fn new(path: &Path) -> Result<()> {
+    let cwd = std::env::current_dir().context("failed to get the current directory")?;
+    if let Some(dir) = cwd.ancestors().find(|dir| dir.ends_with(LOOPER_DIR)) {
+        bail!(
+            "{} is inside {}, run looper new from the project root instead",
+            cwd.display(),
+            dir.display()
+        );
+    }
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("failed to create directory {}", parent.display()))?;
