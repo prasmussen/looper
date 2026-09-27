@@ -148,10 +148,17 @@ impl TaskLog {
         self.start().and_then(|s| s["total"].as_u64())
     }
 
-    fn title(&self) -> String {
-        self.start()
-            .and_then(|s| s["task_text"].as_str())
-            .map(|t| truncate(first_line(t), 70))
+    /// The generated title, or the first line of the task for logs without
+    /// one, cut to `max` characters.
+    fn title(&self, max: usize) -> String {
+        self.find(|e| e["type"] == "looper" && e["event"] == "title")
+            .and_then(|e| e["title"].as_str())
+            .or_else(|| {
+                self.start()
+                    .and_then(|s| s["task_text"].as_str())
+                    .map(first_line)
+            })
+            .map(|t| truncate(t, max))
             .unwrap_or_else(|| "(unknown task)".into())
     }
 
@@ -385,7 +392,7 @@ fn list_tasks(run_dir: &Path, style: Style) -> Result<()> {
                 Cell::styled(plain, style.status(status)),
                 Cell::plain(format_duration(t.duration_ms())),
                 Cell::plain(format!("${:.2}", t.cost())),
-                Cell::plain(t.title()),
+                Cell::plain(t.title(70)),
             ]
         })
         .collect();
@@ -617,11 +624,7 @@ impl Renderer {
             s.bold(&head),
             stats.join(&s.dim(" · "))
         ));
-        let title = log
-            .start()
-            .and_then(|st| st["task_text"].as_str())
-            .map(|t| truncate(first_line(t), self.width.saturating_sub(3)))
-            .unwrap_or_else(|| log.title());
+        let title = log.title(self.width.saturating_sub(3));
         self.line(&format!("{}  {}", s.cyan("│"), s.bold(&title)));
 
         let mut meta = Vec::new();

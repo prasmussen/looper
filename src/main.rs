@@ -14,6 +14,7 @@ use status::StatusLine;
 mod logs;
 mod status;
 mod tasks;
+mod title;
 
 const CONFIG_FILE: &str = "looper.toml";
 /// The task text in a fresh `looper new` file; `looper run` refuses to send it.
@@ -323,15 +324,22 @@ fn run_logged(
         }
     }
 
-    let status = child.wait()?;
-    let exit = json!({
+    let exit = child.wait()?;
+    if let Some(title) = status.generated_title() {
+        writeln!(
+            log,
+            "{}",
+            json!({"type": "looper", "event": "title", "title": title})
+        )?;
+    }
+    let event = json!({
         "type": "looper",
         "event": "exit",
-        "success": status.success(),
-        "exit_code": status.code(),
+        "success": exit.success(),
+        "exit_code": exit.code(),
     });
-    writeln!(log, "{exit}")?;
-    Ok((status, stats))
+    writeln!(log, "{event}")?;
+    Ok((exit, stats))
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -451,7 +459,7 @@ fn run(args: RunArgs) -> Result<()> {
         }
 
         status.err(&format!("==> [{n}/{total}] {}", truncate(title, 80)));
-        status.set_task(n, title);
+        status.set_task(n, title, Some(title::generate(task)));
 
         let mut cmd = Command::new("claude");
         cmd.args(&config.claude_args);

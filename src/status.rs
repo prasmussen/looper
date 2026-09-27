@@ -4,6 +4,7 @@
 //! through it so output scrolls above the line instead of over it.
 
 use std::io::{IsTerminal, Write};
+use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -19,14 +20,33 @@ struct State {
     style: Style,
     total: usize,
     run_started: Instant,
-    /// Current task number, title and start time.
-    task: Option<(usize, String, Instant)>,
+    task: Option<Task>,
     /// Whether the line is on screen right now.
     shown: bool,
     /// Whether the last output ended mid-line; the line waits for the newline
     /// so it doesn't overwrite the text.
     mid_line: bool,
     stopped: bool,
+}
+
+struct Task {
+    n: usize,
+    title: String,
+    started: Instant,
+    /// A generated title on its way, replacing `title` when it arrives.
+    pending: Option<Receiver<String>>,
+    /// Whether `title` is the generated one.
+    generated: bool,
+}
+
+impl Task {
+    fn poll_title(&mut self) {
+        if let Some(title) = self.pending.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.title = title;
+            self.generated = true;
+            self.pending = None;
+        }
+    }
 }
 
 impl StatusLine {
@@ -60,11 +80,26 @@ impl StatusLine {
         Self { shared }
     }
 
-    /// Show `title` as task `n`, with its clock starting now.
-    pub fn set_task(&self, n: usize, title: &str) {
+    /// Show `title` as task `n`, with its clock starting now. A title from
+    /// `generated` replaces it once it arrives.
+    pub fn set_task(&self, n: usize, title: &str, generated: Option<Receiver<String>>) {
         let mut state = self.shared.lock().unwrap();
-        state.task = Some((n, title.to_string(), Instant::now()));
+        state.task = Some(Task {
+            n,
+            title: title.to_string(),
+            started: Instant::now(),
+            pending: generated,
+            generated: false,
+        });
         state.draw();
+    }
+
+    /// The current task's generated title, if it has arrived.
+    pub fn generated_title(&self) -> Option<String> {
+        let mut state = self.shared.lock().unwrap();
+        let task = state.task.as_mut()?;
+        task.poll_title();
+        task.generated.then(|| task.title.clone())
     }
 
     /// Print to stdout above the status line.
@@ -122,9 +157,11 @@ impl State {
         if !self.enabled || self.stopped || self.mid_line {
             return;
         }
-        let Some((n, title, task_started)) = &self.task else {
+        let Some(task) = &mut self.task else {
             return;
         };
+        task.poll_title();
+        let (n, title, task_started) = (task.n, &task.title, task.started);
         let s = self.style;
         let left = self.total - n;
         let counts = format!("[{n}/{}] {left} left", self.total);
