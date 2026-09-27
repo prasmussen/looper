@@ -1,0 +1,110 @@
+# looper
+
+Run [Claude Code](https://claude.com/claude-code) once per task, in order,
+unattended. You write a list of tasks in a `looper.toml`; looper sends each one
+to `claude -p` wrapped in a shared prefix and suffix, keeps a transcript of
+every run, and collects the follow-up tasks Claude leaves behind.
+
+## Install
+
+Requires Rust (edition 2024) and `claude` on your `PATH`.
+
+```sh
+./release.sh
+```
+
+This builds a release binary and installs it to `~/.local/bin/looper`.
+`cargo install --path .` works too.
+
+## Usage
+
+```sh
+looper new          # create looper.toml, .looper/tasks/ and .looper/logs/
+$EDITOR looper.toml # write your tasks
+looper run          # run them, one claude call per task
+```
+
+### looper.toml
+
+```toml
+# Flags passed to every `claude` call. The prompt is sent on stdin.
+claude_args = ["-p", "--permission-mode", "auto"]
+
+# Text added before every task.
+prefix = """
+/goal
+"""
+
+# Text added after every task.
+suffix = """
+Commit your work in small, focused commits. Run the tests. ...
+"""
+
+# Each task becomes one `claude` call: prefix + task + suffix.
+tasks = [
+  """
+  Add a --json flag to the list command.
+  """,
+  """
+  Rename the Config struct to Settings.
+  """,
+]
+```
+
+`looper new` writes a template with a suffix that asks Claude to work without
+asking questions, commit as it goes, run the tests, and write any follow-ups it
+didn't finish as markdown files in `.looper/tasks/`. `looper run` refuses to
+start while a task still says `REPLACE ME`.
+
+### Running
+
+```sh
+looper run [CONFIG]
+```
+
+| Flag                | Effect                                                     |
+| ------------------- | ---------------------------------------------------------- |
+| `--dry-run`         | Print the prompts without running them                     |
+| `--stop-on-failure` | Stop at the first failing task instead of continuing       |
+| `--log-dir DIR`     | Save transcripts under `DIR` instead of `.looper/logs`     |
+| `--no-log`          | Don't save transcripts; only show Claude's final replies   |
+
+While it runs, looper shows a readable version of the conversation with a
+timestamp on each line, and a status line at the bottom with the current task,
+how many are left, and elapsed time. A short title for each task is generated
+in the background with Haiku. At the end it prints the number of tasks run, the
+models used, total turns and cost, and which tasks failed (exiting with status 1
+if any did).
+
+### Logs
+
+Each run gets its own folder, `.looper/logs/<config>-<timestamp>/`, with one
+`task-NN.jsonl` per task holding Claude's full `stream-json` output plus
+looper's own start, title and exit events.
+
+```sh
+looper logs list              # runs, newest first
+looper logs list RUN          # tasks of one run
+looper logs show [RUN]        # transcript of a run (default: the latest)
+looper logs show --task 2     # only task 2
+looper logs show --detail minimal|compact|normal|full
+looper logs clean             # delete all logs
+```
+
+### Follow-up tasks
+
+```sh
+looper tasks list             # follow-ups Claude wrote, newest first
+looper tasks show [TASK]      # one task (number or file name) or all of them
+looper tasks clean            # delete them all
+```
+
+`show` commands go through `$PAGER` (default `less`) when writing to a
+terminal; pass `--no-pager` to print directly. Colors follow `NO_COLOR` and
+`CLICOLOR_FORCE`.
+
+## The .looper folder
+
+`.looper/` gets a `.gitignore` that ignores everything in it, so Claude's
+commits never pick up logs or follow-up tasks. A custom `--log-dir` gets its
+own `.gitignore` for the same reason.

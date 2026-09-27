@@ -27,7 +27,6 @@ const TEMPLATE: &str = r#"# Flags passed to every `claude` call. The prompt is s
 # and each value is its own string; keep a flag and its value on the same line.
 claude_args = [
   "-p",
-  "--remote-control",
   "--permission-mode", "auto",
 ]
 
