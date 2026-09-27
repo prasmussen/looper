@@ -12,6 +12,9 @@ use serde_json::{Value, json};
 mod logs;
 
 const CONFIG_FILE: &str = "looper.toml";
+/// The task text in a fresh `looper new` file; `looper run` refuses to send it.
+const PLACEHOLDER: &str = "REPLACE ME";
+const LOOPER_DIR: &str = ".looper";
 const TASKS_DIR: &str = ".looper/tasks";
 const LOGS_DIR: &str = ".looper/logs";
 
@@ -48,17 +51,15 @@ Then run the tests and make sure they pass.
 Finally, for each gap or follow-up you did not complete, create one markdown
 file in .looper/tasks/. Keep each file short: a title, a line with
 `Priority: LOW`, `Priority: MEDIUM` or `Priority: HIGH`, and a few sentences
-describing what needs to be done and why.
+describing what needs to be done and why. The .looper/ folder is
+git-ignored on purpose; don't commit these files.
 """
 
 # Each task becomes one `claude` call: prefix + task + suffix.
 # Tasks run in order, one at a time.
 tasks = [
   """
-  Add a --verbose flag to the CLI.
-  """,
-  """
-  Write a README that explains how to install and use the tool.
+  REPLACE ME
   """,
 ]
 "#;
@@ -191,10 +192,12 @@ fn new(path: &Path) -> Result<()> {
     file.write_all(TEMPLATE.as_bytes())?;
     eprintln!("created {}", path.display());
 
-    std::fs::create_dir_all(TASKS_DIR)
-        .with_context(|| format!("failed to create directory {TASKS_DIR}"))?;
-    create_logs_dir(Path::new(LOGS_DIR))?;
-    eprintln!("created {TASKS_DIR}/ and {LOGS_DIR}/");
+    create_looper_dir()?;
+    for dir in [TASKS_DIR, LOGS_DIR] {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("failed to create directory {dir}"))?;
+    }
+    eprintln!("created {TASKS_DIR}/ and {LOGS_DIR}/ (git-ignored)");
     Ok(())
 }
 
@@ -306,11 +309,31 @@ fn create_run_log_dir(base: &Path, config: &Path) -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// Create the logs directory with a `.gitignore` in it, so Claude's commits
-/// don't pick up the logs.
+/// Create the logs directory, git-ignored so Claude's commits don't pick up
+/// the logs: through `.looper/.gitignore` for the default location, or a
+/// `.gitignore` of its own for a custom `--log-dir`.
 fn create_logs_dir(dir: &Path) -> Result<()> {
+    if dir.starts_with(LOOPER_DIR) {
+        create_looper_dir()?;
+    }
     std::fs::create_dir_all(dir)
         .with_context(|| format!("failed to create log directory {}", dir.display()))?;
+    if !dir.starts_with(LOOPER_DIR) {
+        write_gitignore(dir)?;
+    }
+    Ok(())
+}
+
+/// Create `.looper/` with a `.gitignore` that ignores everything in it, so
+/// Claude's commits don't pick up logs or follow-up tasks.
+fn create_looper_dir() -> Result<()> {
+    std::fs::create_dir_all(LOOPER_DIR)
+        .with_context(|| format!("failed to create directory {LOOPER_DIR}"))?;
+    write_gitignore(Path::new(LOOPER_DIR))
+}
+
+/// Put a `.gitignore` that ignores everything in `dir`, unless one exists.
+fn write_gitignore(dir: &Path) -> Result<()> {
     let gitignore = dir.join(".gitignore");
     if !gitignore.exists() {
         std::fs::write(&gitignore, "*\n")
@@ -323,6 +346,15 @@ fn run(args: RunArgs) -> Result<()> {
     let config = Config::load(&args.config)?;
     if config.tasks.is_empty() {
         bail!("no tasks defined in {}", args.config.display());
+    }
+    if let Some(i) = config.tasks.iter().position(|t| t.contains(PLACEHOLDER))
+        && !args.dry_run
+    {
+        bail!(
+            "task {} in {} still says {PLACEHOLDER}; write the task first",
+            i + 1,
+            args.config.display()
+        );
     }
 
     if args.dry_run {
