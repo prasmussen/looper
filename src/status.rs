@@ -1,5 +1,5 @@
 //! The status line `looper run` keeps at the bottom of the terminal: which task
-//! is running, how many are left, how long this task and the whole run have
+//! is running out of how many, how long this task and the whole run have
 //! taken, and how many tokens the run has used. It ticks every second, and
 //! everything `looper run` prints goes through it so output scrolls above the
 //! line instead of over it, with the time at the start of every line.
@@ -206,8 +206,7 @@ impl State {
         let mut tokens = self.done_tokens;
         tokens += task.tokens;
         let s = self.style;
-        let left = self.total - n;
-        let counts = format!("[{n}/{}] {left} left", self.total);
+        let counts = format!("[{n}/{}]", self.total);
         let mut times = format!(
             "task {} · total {}",
             format_duration(task_started.elapsed().as_millis() as f64),
