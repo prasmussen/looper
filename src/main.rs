@@ -9,6 +9,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 const CONFIG_FILE: &str = "looper.toml";
+const TASKS_DIR: &str = ".looper/tasks";
+const LOGS_DIR: &str = ".looper/logs";
 
 const TEMPLATE: &str = r#"# Flags passed to every `claude` call. The prompt is sent on stdin. Each flag
 # and each value is its own string; keep a flag and its value on the same line.
@@ -37,7 +39,7 @@ before each commit.
 When you are done, run the tests and make sure they pass.
 
 Then, if there are any gaps or follow-ups, create one markdown
-file per item in docs/tasks/. Keep each file short: a title, a line with
+file per item in .looper/tasks/. Keep each file short: a title, a line with
 `Priority: LOW`, `Priority: MEDIUM` or `Priority: HIGH`, and a few sentences
 describing what needs to be done and why.
 """
@@ -81,14 +83,19 @@ struct RunArgs {
     #[arg(default_value = CONFIG_FILE)]
     config: PathBuf,
 
-    /// Save the full transcript of each run (messages, tool calls, results) as
-    /// `<LOG_DIR>/task-NN.jsonl`
-    #[arg(long)]
+    /// Where to save the full transcript of each task (messages, tool calls,
+    /// results). Each run gets its own folder inside it
+    /// [default: .looper/logs]
+    #[arg(long, conflicts_with = "no_log")]
     log_dir: Option<PathBuf>,
 
-    /// Keep going when a claude invocation fails instead of stopping
+    /// Don't save transcripts; only show claude's final reply for each task
     #[arg(long)]
-    keep_going: bool,
+    no_log: bool,
+
+    /// Stop at the first task that fails instead of continuing with the rest
+    #[arg(long)]
+    stop_on_failure: bool,
 
     /// Print the prompts without running them
     #[arg(long)]
@@ -138,6 +145,11 @@ fn new(path: &Path) -> Result<()> {
     };
     file.write_all(TEMPLATE.as_bytes())?;
     eprintln!("created {}", path.display());
+
+    std::fs::create_dir_all(TASKS_DIR)
+        .with_context(|| format!("failed to create directory {TASKS_DIR}"))?;
+    create_logs_dir(Path::new(LOGS_DIR))?;
+    eprintln!("created {TASKS_DIR}/ and {LOGS_DIR}/");
     Ok(())
 }
 
@@ -218,19 +230,62 @@ fn first_line(s: &str) -> &str {
     s.trim().lines().next().unwrap_or_default()
 }
 
+/// Create `<base>/<task file stem>-<timestamp>/`, so runs never overwrite each
+/// other.
+fn create_run_log_dir(base: &Path, config: &Path) -> Result<PathBuf> {
+    let stem = config.file_stem().unwrap_or_default().to_string_lossy();
+    let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
+    create_logs_dir(base)?;
+
+    // Add -2, -3, ... if a run already started in the same second.
+    let mut dir = base.join(format!("{stem}-{timestamp}"));
+    let mut n = 1;
+    loop {
+        match std::fs::create_dir(&dir) {
+            Ok(()) => break,
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                n += 1;
+                dir = base.join(format!("{stem}-{timestamp}-{n}"));
+            }
+            Err(e) => {
+                return Err(e)
+                    .with_context(|| format!("failed to create log directory {}", dir.display()));
+            }
+        }
+    }
+    Ok(dir)
+}
+
+/// Create the logs directory with a `.gitignore` in it, so Claude's commits
+/// don't pick up the logs.
+fn create_logs_dir(dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("failed to create log directory {}", dir.display()))?;
+    let gitignore = dir.join(".gitignore");
+    if !gitignore.exists() {
+        std::fs::write(&gitignore, "*\n")
+            .with_context(|| format!("failed to create {}", gitignore.display()))?;
+    }
+    Ok(())
+}
+
 fn run(args: RunArgs) -> Result<()> {
     let config = Config::load(&args.config)?;
     if config.tasks.is_empty() {
         bail!("no tasks defined in {}", args.config.display());
     }
 
-    if let Some(log_dir) = &args.log_dir {
-        std::fs::create_dir_all(log_dir)
-            .with_context(|| format!("failed to create log directory {}", log_dir.display()))?;
-    }
-
     if args.dry_run {
         eprintln!("==> claude {} < prompt", config.claude_args.join(" "));
+    }
+
+    let log_dir = match (&args.log_dir, args.no_log || args.dry_run) {
+        (_, true) => None,
+        (Some(base), false) => Some(create_run_log_dir(base, &args.config)?),
+        (None, false) => Some(create_run_log_dir(Path::new(LOGS_DIR), &args.config)?),
+    };
+    if let Some(log_dir) = &log_dir {
+        eprintln!("==> logging to {}", log_dir.display());
     }
 
     let total = config.tasks.len();
@@ -248,10 +303,9 @@ fn run(args: RunArgs) -> Result<()> {
 
         let mut cmd = Command::new("claude");
         cmd.args(&config.claude_args);
-        let status = match &args.log_dir {
+        let status = match &log_dir {
             Some(log_dir) => {
                 let log_path = log_dir.join(format!("task-{n:02}.jsonl"));
-                eprintln!("==> logging to {}", log_path.display());
                 run_logged(cmd, &prompt, &log_path)?
             }
             None => spawn_claude(cmd, &prompt)?.wait()?,
@@ -259,7 +313,7 @@ fn run(args: RunArgs) -> Result<()> {
 
         if !status.success() {
             eprintln!("==> claude failed on task {n} ({status})");
-            if !args.keep_going {
+            if args.stop_on_failure {
                 bail!("stopping after failure on task {n}");
             }
             failures.push((n, task));
