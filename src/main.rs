@@ -18,12 +18,17 @@ claude_args = [
   "--permission-mode", "auto",
 ]
 
-# Text added before every task.
+# Text added before every task. `/goal` makes Claude keep working until the
+# task and suffix are done; it must be the very first thing in the prompt.
 prefix = """
+/goal
 """
 
 # Text added after every task.
 suffix = """
+Nobody is available to answer questions while you work. If a question comes
+up, don't ask it; go with what you would have suggested and continue.
+
 Commit your work in several small, focused git commits as you go, rather
 than one big commit at the end. If the project has a formatter (e.g.
 cargo fmt, prettier, gofmt, ruff format), format the files you changed
@@ -59,8 +64,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Create a looper.toml template in the current directory
-    New,
+    /// Create a task file from a template
+    New {
+        /// Path of the file to create
+        #[arg(default_value = CONFIG_FILE)]
+        path: PathBuf,
+    },
 
     /// Run every task in a looper.toml
     Run(RunArgs),
@@ -115,20 +124,20 @@ impl Config {
     }
 }
 
-fn new() -> Result<()> {
-    let mut file = match OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(CONFIG_FILE)
-    {
+fn new(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create directory {}", parent.display()))?;
+    }
+    let mut file = match OpenOptions::new().write(true).create_new(true).open(path) {
         Ok(file) => file,
         Err(e) if e.kind() == ErrorKind::AlreadyExists => {
-            bail!("{CONFIG_FILE} already exists in this directory")
+            bail!("{} already exists", path.display())
         }
-        Err(e) => return Err(e).context(format!("failed to create {CONFIG_FILE}")),
+        Err(e) => return Err(e).context(format!("failed to create {}", path.display())),
     };
     file.write_all(TEMPLATE.as_bytes())?;
-    eprintln!("created {CONFIG_FILE}");
+    eprintln!("created {}", path.display());
     Ok(())
 }
 
@@ -270,7 +279,7 @@ fn run(args: RunArgs) -> Result<()> {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
-        Cmd::New => new(),
+        Cmd::New { path } => new(&path),
         Cmd::Run(args) => run(args),
     }
 }
