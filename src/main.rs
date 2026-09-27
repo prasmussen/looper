@@ -61,7 +61,9 @@ git-ignored on purpose; don't commit these files.
 """
 
 # Each task becomes one `claude` call: prefix + task + suffix.
-# Tasks run in order, one at a time.
+# Tasks run in order, one at a time. Each task starts with a fresh context,
+# without the conversations of earlier tasks, so keep work that needs the same
+# context together in one task.
 tasks = [
   """
   REPLACE ME

@@ -40,7 +40,8 @@ suffix = """
 Commit your work in small, focused commits. Run the tests. ...
 """
 
-# Each task becomes one `claude` call: prefix + task + suffix.
+# Each task becomes one `claude` call: prefix + task + suffix. Each task
+# starts with a fresh context, so keep work that needs the same context together.
 tasks = [
   """
   Add a --json flag to the list command.
