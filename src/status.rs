@@ -1,7 +1,7 @@
-//! The status line `looper run` keeps at the bottom of the terminal: which task
+//! The status line `looper plans run` keeps at the bottom of the terminal: which task
 //! is running out of how many, how long this task and the whole run have
 //! taken, and how many tokens the run has used. It ticks every second, and
-//! everything `looper run` prints goes through it so output scrolls above the
+//! everything `looper plans run` prints goes through it so output scrolls above the
 //! line instead of over it, with the time at the start of every line.
 
 use std::io::{IsTerminal, Write};

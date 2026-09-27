@@ -1,7 +1,7 @@
 # looper
 
 Run [Claude Code](https://claude.com/claude-code) once per task, in order,
-unattended. You write a list of tasks in a `looper.toml`; looper sends each one
+unattended. You write a list of tasks in a plan file; looper sends each one
 to `claude -p` wrapped in a shared prefix and suffix, keeps a transcript of
 every run, and collects the follow-up tasks Claude leaves behind.
 
@@ -19,12 +19,12 @@ This builds a release binary and installs it to `~/.local/bin/looper`.
 ## Usage
 
 ```sh
-looper new          # create looper.toml, .looper/tasks/ and .looper/logs/
-$EDITOR looper.toml # write your tasks
-looper run          # run them, one claude call per task
+looper new NAME                   # create .looper/plans/NAME.toml
+$EDITOR .looper/plans/NAME.toml   # write your tasks
+looper plans run NAME             # run them, one claude call per task
 ```
 
-### looper.toml
+### Plan files
 
 ```toml
 # Flags passed to every `claude` call. The prompt is sent on stdin.
@@ -54,14 +54,17 @@ tasks = [
 
 `looper new` writes a template with a suffix that asks Claude to work without
 asking questions, commit as it goes, run the tests, and write any follow-ups it
-didn't finish as markdown files in `.looper/tasks/`. `looper run` refuses to
-start while a task still says `REPLACE ME`.
+didn't finish as markdown files in `.looper/tasks/`. `looper plans run` refuses
+to start while a task still says `REPLACE ME`.
 
 ### Running
 
 ```sh
-looper run [CONFIG]
+looper plans list             # plans, most recently changed first
+looper plans run PLAN         # run every task in a plan
 ```
+
+`PLAN` is a plan name from `.looper/plans/`, or a path to a plan file.
 
 | Flag                | Effect                                                     |
 | ------------------- | ---------------------------------------------------------- |
@@ -79,7 +82,7 @@ cost, and which tasks failed (exiting with status 1 if any did).
 
 ### Logs
 
-Each run gets its own folder, `.looper/logs/<config>-<timestamp>/`, with one
+Each run gets its own folder, `.looper/logs/<plan>-<timestamp>/`, with one
 `task-NN.jsonl` per task holding Claude's full `stream-json` output plus
 looper's own start, title and exit events.
 
@@ -107,5 +110,5 @@ terminal; pass `--no-pager` to print directly. Colors follow `NO_COLOR` and
 ## The .looper folder
 
 `.looper/` gets a `.gitignore` that ignores everything in it, so Claude's
-commits never pick up logs or follow-up tasks. A custom `--log-dir` gets its
-own `.gitignore` for the same reason.
+commits never pick up plans, logs or follow-up tasks. A custom `--log-dir` gets
+its own `.gitignore` for the same reason.

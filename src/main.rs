@@ -13,14 +13,15 @@ use serde_json::{Value, json};
 use status::StatusLine;
 
 mod logs;
+mod plans;
 mod status;
 mod tasks;
 mod title;
 
-const CONFIG_FILE: &str = "looper.toml";
-/// The task text in a fresh `looper new` file; `looper run` refuses to send it.
+/// The task text in a fresh `looper new` file; `looper plans run` refuses to send it.
 const PLACEHOLDER: &str = "REPLACE ME";
 const LOOPER_DIR: &str = ".looper";
+const PLANS_DIR: &str = ".looper/plans";
 const TASKS_DIR: &str = ".looper/tasks";
 const LOGS_DIR: &str = ".looper/logs";
 
@@ -71,7 +72,7 @@ tasks = [
 ]
 "#;
 
-/// Run claude once per task defined in a looper.toml, in order.
+/// Run claude once per task defined in a plan file, in order.
 #[derive(Parser)]
 #[command(version, about)]
 struct Cli {
@@ -81,15 +82,17 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Create a task file from a template
+    /// Create a plan in .looper/plans/<NAME>.toml from a template
     New {
-        /// Path of the file to create
-        #[arg(default_value = CONFIG_FILE)]
-        path: PathBuf,
+        /// Name of the plan
+        name: String,
     },
 
-    /// Run every task in a looper.toml
-    Run(RunArgs),
+    /// List and run the plans in .looper/plans
+    Plans {
+        #[command(subcommand)]
+        command: PlansCmd,
+    },
 
     /// Browse the logs of earlier runs
     Logs {
@@ -110,6 +113,15 @@ enum Cmd {
         #[command(subcommand)]
         command: TasksCmd,
     },
+}
+
+#[derive(Subcommand)]
+enum PlansCmd {
+    /// List plans, most recently changed first
+    List,
+
+    /// Run every task in a plan
+    Run(RunArgs),
 }
 
 #[derive(Subcommand)]
@@ -165,9 +177,8 @@ enum LogsCmd {
 
 #[derive(clap::Args)]
 struct RunArgs {
-    /// Path to the task file
-    #[arg(default_value = CONFIG_FILE)]
-    config: PathBuf,
+    /// Plan to run: a name from .looper/plans, or a path to a plan file
+    plan: String,
 
     /// Where to save the full transcript of each task (messages, tool calls,
     /// results). Each run gets its own folder inside it
@@ -217,7 +228,26 @@ impl Config {
     }
 }
 
-fn new(path: &Path) -> Result<()> {
+/// The path of plan `name` in .looper/plans.
+fn plan_path(name: &str) -> PathBuf {
+    Path::new(PLANS_DIR).join(format!("{name}.toml"))
+}
+
+/// Resolve the plan argument of `looper plans run`: an existing file is used as is,
+/// anything else is looked up by name in .looper/plans.
+fn resolve_plan(plan: &str) -> PathBuf {
+    let path = Path::new(plan);
+    if path.is_file() {
+        path.to_path_buf()
+    } else {
+        plan_path(plan)
+    }
+}
+
+fn new(name: &str) -> Result<()> {
+    if name.is_empty() || name.contains(['/', '\\']) || name.starts_with('.') {
+        bail!("invalid plan name {name:?}; use a plain name like `refactor`");
+    }
     let cwd = std::env::current_dir().context("failed to get the current directory")?;
     if let Some(dir) = cwd.ancestors().find(|dir| dir.ends_with(LOOPER_DIR)) {
         bail!(
@@ -226,11 +256,14 @@ fn new(path: &Path) -> Result<()> {
             dir.display()
         );
     }
-    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create directory {}", parent.display()))?;
+    create_looper_dir()?;
+    for dir in [PLANS_DIR, TASKS_DIR, LOGS_DIR] {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("failed to create directory {dir}"))?;
     }
-    let mut file = match OpenOptions::new().write(true).create_new(true).open(path) {
+
+    let path = plan_path(name);
+    let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
         Ok(file) => file,
         Err(e) if e.kind() == ErrorKind::AlreadyExists => {
             bail!("{} already exists", path.display())
@@ -239,13 +272,7 @@ fn new(path: &Path) -> Result<()> {
     };
     file.write_all(TEMPLATE.as_bytes())?;
     eprintln!("created {}", path.display());
-
-    create_looper_dir()?;
-    for dir in [TASKS_DIR, LOGS_DIR] {
-        std::fs::create_dir_all(dir)
-            .with_context(|| format!("failed to create directory {dir}"))?;
-    }
-    eprintln!("created {TASKS_DIR}/ and {LOGS_DIR}/ (git-ignored)");
+    eprintln!("edit it, then start it with: looper plans run {name}");
     Ok(())
 }
 
@@ -437,9 +464,10 @@ fn write_gitignore(dir: &Path) -> Result<()> {
 }
 
 fn run(args: RunArgs) -> Result<()> {
-    let config = Config::load(&args.config)?;
+    let plan = resolve_plan(&args.plan);
+    let config = Config::load(&plan)?;
     if config.tasks.is_empty() {
-        bail!("no tasks defined in {}", args.config.display());
+        bail!("no tasks defined in {}", plan.display());
     }
     if let Some(i) = config.tasks.iter().position(|t| t.contains(PLACEHOLDER))
         && !args.dry_run
@@ -447,7 +475,7 @@ fn run(args: RunArgs) -> Result<()> {
         bail!(
             "task {} in {} still says {PLACEHOLDER}; write the task first",
             i + 1,
-            args.config.display()
+            plan.display()
         );
     }
 
@@ -461,8 +489,8 @@ fn run(args: RunArgs) -> Result<()> {
 
     let log_dir = match (&args.log_dir, args.no_log || args.dry_run) {
         (_, true) => None,
-        (Some(base), false) => Some(create_run_log_dir(base, &args.config)?),
-        (None, false) => Some(create_run_log_dir(Path::new(LOGS_DIR), &args.config)?),
+        (Some(base), false) => Some(create_run_log_dir(base, &plan)?),
+        (None, false) => Some(create_run_log_dir(Path::new(LOGS_DIR), &plan)?),
     };
     if let Some(log_dir) = &log_dir {
         status.err(&format!("==> logging to {}", log_dir.display()));
@@ -497,7 +525,7 @@ fn run(args: RunArgs) -> Result<()> {
                     "event": "start",
                     "task": n,
                     "total": total,
-                    "task_file": args.config.display().to_string(),
+                    "task_file": plan.display().to_string(),
                     "task_text": task.trim(),
                     "prompt": prompt,
                     "started_at": chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
@@ -571,8 +599,11 @@ fn format_elapsed(started: Instant) -> String {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
-        Cmd::New { path } => new(&path),
-        Cmd::Run(args) => run(args),
+        Cmd::New { name } => new(&name),
+        Cmd::Plans { command } => match command {
+            PlansCmd::List => plans::list(Path::new(PLANS_DIR)),
+            PlansCmd::Run(args) => run(args),
+        },
         Cmd::Logs { log_dir, command } => match command {
             LogsCmd::List { run } => logs::list(&log_dir, run.as_deref()),
             LogsCmd::Show {

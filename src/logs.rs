@@ -1,5 +1,5 @@
 //! `looper logs list` and `looper logs show`: read the `.jsonl` transcripts
-//! written by `looper run` and print them in a human readable form.
+//! written by `looper plans run` and print them in a human readable form.
 
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write as _};
@@ -577,7 +577,7 @@ pub(crate) fn page(text: &str, pager: bool) -> Result<()> {
     Ok(())
 }
 
-/// Renders claude's events as they arrive during `looper run`, in the same
+/// Renders claude's events as they arrive during `looper plans run`, in the same
 /// format as `looper logs show --detail minimal`.
 pub struct LiveRenderer {
     renderer: Renderer,
