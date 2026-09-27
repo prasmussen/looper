@@ -511,7 +511,7 @@ pub(crate) fn page(text: &str, pager: bool) -> Result<()> {
     Ok(())
 }
 
-/// Prints claude's events as they arrive during `looper run`, in the same
+/// Renders claude's events as they arrive during `looper run`, in the same
 /// format as `looper logs show --detail minimal`.
 pub struct LiveRenderer {
     renderer: Renderer,
@@ -528,12 +528,11 @@ impl LiveRenderer {
         }
     }
 
-    pub fn event(&mut self, event: &Value) {
+    /// Render one event and return the output it added, ready to print.
+    pub fn event(&mut self, event: &Value) -> &str {
         self.renderer.event(event);
-        let out = &self.renderer.out[self.printed..];
-        print!("{out}");
-        let _ = std::io::stdout().flush();
-        self.printed = self.renderer.out.len();
+        let start = std::mem::replace(&mut self.printed, self.renderer.out.len());
+        &self.renderer.out[start..]
     }
 }
 

@@ -9,7 +9,10 @@ use clap::{Parser, Subcommand};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use status::StatusLine;
+
 mod logs;
+mod status;
 mod tasks;
 
 const CONFIG_FILE: &str = "looper.toml";
@@ -250,10 +253,18 @@ fn spawn_claude(mut cmd: Command, prompt: &str) -> Result<Child> {
     Ok(child)
 }
 
-/// Run claude with stream-json output, writing every event to `log_path` and
-/// printing a readable version of the conversation to the terminal. The log
-/// starts with a looper `start` event (`header`) and ends with an `exit` event,
-/// so it records what was asked and how claude exited.
+/// Run claude without a log, printing its output above the status line.
+fn run_plain(mut cmd: Command, prompt: &str, status: &StatusLine) -> Result<ExitStatus> {
+    cmd.stdout(Stdio::piped());
+    let mut child = spawn_claude(cmd, prompt)?;
+    let stdout = child.stdout.take().expect("stdout is piped");
+    for line in BufReader::new(stdout).lines() {
+        let line = line.context("failed to read claude output")?;
+        status.out(&format!("{line}\n"));
+    }
+    Ok(child.wait()?)
+}
+
 /// Turns and cost of one task, from claude's final `result` event.
 #[derive(Default)]
 struct TaskStats {
@@ -261,6 +272,11 @@ struct TaskStats {
     cost: f64,
 }
 
+/// Run claude with stream-json output, writing every event to `log_path` and
+/// printing a readable version of the conversation to the terminal. The log
+/// starts with a looper `start` event (`header`) and ends with an `exit` event,
+/// so it records what was asked and how claude exited.
+///
 /// Models claude reports are added to `models`, and announced the first time
 /// each one is seen in the run.
 fn run_logged(
@@ -269,6 +285,7 @@ fn run_logged(
     header: Value,
     log_path: &Path,
     models: &mut Vec<String>,
+    status: &StatusLine,
 ) -> Result<(ExitStatus, Option<TaskStats>)> {
     let mut log = File::create(log_path)
         .with_context(|| format!("failed to create log file {}", log_path.display()))?;
@@ -291,7 +308,7 @@ fn run_logged(
                     && let Some(model) = event["model"].as_str()
                     && !models.iter().any(|m| m == model)
                 {
-                    eprintln!("==> model: {model}");
+                    status.err(&format!("==> model: {model}"));
                     models.push(model.to_string());
                 }
                 if event["type"] == "result" {
@@ -300,9 +317,9 @@ fn run_logged(
                         cost: event["total_cost_usd"].as_f64().unwrap_or_default(),
                     });
                 }
-                renderer.event(&event);
+                status.out(renderer.event(&event));
             }
-            Err(_) => println!("{line}"),
+            Err(_) => status.out(&format!("{line}\n")),
         }
     }
 
@@ -421,21 +438,25 @@ fn run(args: RunArgs) -> Result<()> {
     let mut totals = TaskStats::default();
     let mut models = Vec::new();
     let run_started = Instant::now();
+    let status = StatusLine::start(total, run_started);
 
     for (i, task) in config.tasks.iter().enumerate() {
         let n = i + 1;
         let prompt = config.prompt(task);
-        eprintln!("==> [{n}/{total}] {}", truncate(first_line(task), 80));
-
+        let title = first_line(task);
         if args.dry_run {
+            eprintln!("==> [{n}/{total}] {}", truncate(title, 80));
             eprintln!("{prompt}\n");
             continue;
         }
 
+        status.err(&format!("==> [{n}/{total}] {}", truncate(title, 80)));
+        status.set_task(n, title);
+
         let mut cmd = Command::new("claude");
         cmd.args(&config.claude_args);
         let task_started = Instant::now();
-        let (status, stats) = match &log_dir {
+        let (exit, stats) = match &log_dir {
             Some(log_dir) => {
                 let log_path = log_dir.join(format!("task-{n:02}.jsonl"));
                 let header = json!({
@@ -448,9 +469,9 @@ fn run(args: RunArgs) -> Result<()> {
                     "prompt": prompt,
                     "started_at": chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                 });
-                run_logged(cmd, &prompt, header, &log_path, &mut models)?
+                run_logged(cmd, &prompt, header, &log_path, &mut models, &status)?
             }
-            None => (spawn_claude(cmd, &prompt)?.wait()?, None),
+            None => (run_plain(cmd, &prompt, &status)?, None),
         };
         ran += 1;
         let elapsed = format_elapsed(task_started);
@@ -459,22 +480,25 @@ fn run(args: RunArgs) -> Result<()> {
             totals.cost += stats.cost;
         }
 
-        if status.success() {
+        if exit.success() {
             // With logging, the transcript already ends with claude's own
             // summary line; without it, say how long the task took.
             if stats.is_none() {
-                eprintln!("==> task {n} done in {elapsed}");
+                status.err(&format!("==> task {n} done in {elapsed}"));
             }
         } else {
-            eprintln!("==> claude failed on task {n} after {elapsed} ({status})");
+            status.err(&format!(
+                "==> claude failed on task {n} after {elapsed} ({exit})"
+            ));
             failures.push((n, task));
             if args.stop_on_failure {
-                eprintln!("==> stopping after failure on task {n}");
+                status.err(&format!("==> stopping after failure on task {n}"));
                 break;
             }
         }
     }
 
+    status.stop();
     if args.dry_run {
         return Ok(());
     }
