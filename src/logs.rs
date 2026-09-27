@@ -263,13 +263,30 @@ fn run_name(run_dir: &Path) -> String {
         .unwrap_or_else(|| run_dir.display().to_string())
 }
 
-fn format_duration(ms: f64) -> String {
-    let secs = (ms / 1000.0).round() as u64;
-    match secs {
-        0..60 => format!("{:.1}s", ms / 1000.0),
-        60..3600 => format!("{}m {:02}s", secs / 60, secs % 60),
-        _ => format!("{}h {:02}m", secs / 3600, secs % 3600 / 60),
+pub fn format_turns(turns: u64) -> String {
+    match turns {
+        1 => "1 turn".to_string(),
+        n => format!("{n} turns"),
     }
+}
+
+/// Format a duration as e.g. `45s`, `17m 57s`, `2h 0m 13s` or `1d 3h 4m 5s`,
+/// dropping the milliseconds.
+pub fn format_duration(ms: f64) -> String {
+    let secs = (ms / 1000.0) as u64;
+    let parts = [
+        (secs / 86_400, "d"),
+        (secs % 86_400 / 3600, "h"),
+        (secs % 3600 / 60, "m"),
+        (secs % 60, "s"),
+    ];
+    // Start at the largest non-zero unit and keep every unit below it.
+    let first = parts.iter().position(|(n, _)| *n > 0).unwrap_or(3);
+    parts[first..]
+        .iter()
+        .map(|(n, unit)| format!("{n}{unit}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn terminal_width() -> usize {
@@ -432,16 +449,7 @@ pub fn show(
         bail!("no task logs found");
     }
 
-    let mut r = Renderer {
-        out: String::new(),
-        style: Style::detect(),
-        width: terminal_width(),
-        full: detail == Detail::Full,
-        compact: matches!(detail, Detail::Compact | Detail::Minimal),
-        minimal: detail == Detail::Minimal,
-        cwd: None,
-        tools: HashMap::new(),
-    };
+    let mut r = Renderer::new(detail);
     for (i, file) in files.iter().enumerate() {
         if i > 0 {
             r.out.push('\n');
@@ -481,6 +489,32 @@ fn page(text: &str, pager: bool) -> Result<()> {
     Ok(())
 }
 
+/// Prints claude's events as they arrive during `looper run`, in the same
+/// format as `looper logs show --detail minimal`.
+pub struct LiveRenderer {
+    renderer: Renderer,
+    /// How much of `renderer.out` has been printed. The output is kept so
+    /// blank-line handling can see what came before.
+    printed: usize,
+}
+
+impl LiveRenderer {
+    pub fn new() -> Self {
+        Self {
+            renderer: Renderer::new(Detail::Minimal),
+            printed: 0,
+        }
+    }
+
+    pub fn event(&mut self, event: &Value) {
+        self.renderer.event(event);
+        let out = &self.renderer.out[self.printed..];
+        print!("{out}");
+        let _ = std::io::stdout().flush();
+        self.printed = self.renderer.out.len();
+    }
+}
+
 struct Renderer {
     out: String,
     style: Style,
@@ -497,6 +531,34 @@ struct Renderer {
 }
 
 impl Renderer {
+    fn new(detail: Detail) -> Self {
+        Self {
+            out: String::new(),
+            style: Style::detect(),
+            width: terminal_width(),
+            full: detail == Detail::Full,
+            compact: matches!(detail, Detail::Compact | Detail::Minimal),
+            minimal: detail == Detail::Minimal,
+            cwd: None,
+            tools: HashMap::new(),
+        }
+    }
+
+    /// Render one stream-json event from claude.
+    fn event(&mut self, event: &Value) {
+        match event["type"].as_str() {
+            Some("system") if event["subtype"] == "init" => {
+                if let Some(cwd) = event["cwd"].as_str() {
+                    self.cwd = Some(format!("{}/", cwd.trim_end_matches('/')));
+                }
+            }
+            Some("assistant") => self.assistant(event),
+            Some("user") => self.tool_results(event),
+            Some("result") => self.result(event),
+            _ => {}
+        }
+    }
+
     fn line(&mut self, text: &str) {
         self.out.push_str(text);
         self.out.push('\n');
@@ -524,7 +586,7 @@ impl Renderer {
         let mut stats = vec![s.status(status)];
         if log.result().is_some() {
             stats.push(format_duration(log.duration_ms()));
-            stats.push(format!("{} turns", log.turns()));
+            stats.push(format_turns(log.turns()));
             stats.push(format!("${:.2}", log.cost()));
         }
         let head = format!("Task {}{total}", log.number());
@@ -584,12 +646,7 @@ impl Renderer {
 
         self.section("transcript");
         for event in &log.events {
-            match event["type"].as_str() {
-                Some("assistant") => self.assistant(event),
-                Some("user") => self.tool_results(event),
-                Some("result") => self.result(event),
-                _ => {}
-            }
+            self.event(event);
         }
 
         match log.exit() {
@@ -879,8 +936,9 @@ impl Renderer {
         let turns = event["num_turns"].as_u64().unwrap_or_default();
         let cost = event["total_cost_usd"].as_f64().unwrap_or_default();
         let summary = format!(
-            "{subtype} · {} · {turns} turns · ${cost:.4}",
-            format_duration(secs)
+            "{subtype} · {} · {} · ${cost:.2}",
+            format_duration(secs),
+            format_turns(turns)
         );
         self.line(&if ok {
             s.green(&format!("✓ {summary}"))
@@ -990,4 +1048,19 @@ fn summary_is_complete(name: &str) -> bool {
         name,
         "Bash" | "Read" | "TodoWrite" | "Skill" | "Edit" | "MultiEdit" | "Write"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_duration;
+
+    #[test]
+    fn formats_durations_without_milliseconds() {
+        assert_eq!(format_duration(0.0), "0s");
+        assert_eq!(format_duration(999.0), "0s");
+        assert_eq!(format_duration(45_700.0), "45s");
+        assert_eq!(format_duration(1_077_100.0), "17m 57s");
+        assert_eq!(format_duration(7_213_000.0), "2h 0m 13s");
+        assert_eq!(format_duration(97_445_000.0), "1d 3h 4m 5s");
+    }
 }

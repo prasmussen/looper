@@ -2,6 +2,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -216,12 +217,19 @@ fn spawn_claude(mut cmd: Command, prompt: &str) -> Result<Child> {
 /// printing a readable version of the conversation to the terminal. The log
 /// starts with a looper `start` event (`header`) and ends with an `exit` event,
 /// so it records what was asked and how claude exited.
+/// Turns and cost of one task, from claude's final `result` event.
+#[derive(Default)]
+struct TaskStats {
+    turns: u64,
+    cost: f64,
+}
+
 fn run_logged(
     mut cmd: Command,
     prompt: &str,
     header: Value,
     log_path: &Path,
-) -> Result<ExitStatus> {
+) -> Result<(ExitStatus, Option<TaskStats>)> {
     let mut log = File::create(log_path)
         .with_context(|| format!("failed to create log file {}", log_path.display()))?;
     writeln!(log, "{header}")?;
@@ -231,11 +239,21 @@ fn run_logged(
     let mut child = spawn_claude(cmd, prompt)?;
 
     let stdout = child.stdout.take().expect("stdout is piped");
+    let mut renderer = logs::LiveRenderer::new();
+    let mut stats = None;
     for line in BufReader::new(stdout).lines() {
         let line = line.context("failed to read claude output")?;
         writeln!(log, "{line}")?;
         match serde_json::from_str::<Value>(&line) {
-            Ok(event) => print_event(&event),
+            Ok(event) => {
+                if event["type"] == "result" {
+                    stats = Some(TaskStats {
+                        turns: event["num_turns"].as_u64().unwrap_or_default(),
+                        cost: event["total_cost_usd"].as_f64().unwrap_or_default(),
+                    });
+                }
+                renderer.event(&event);
+            }
             Err(_) => println!("{line}"),
         }
     }
@@ -248,35 +266,7 @@ fn run_logged(
         "exit_code": status.code(),
     });
     writeln!(log, "{exit}")?;
-    Ok(status)
-}
-
-fn print_event(event: &Value) {
-    match event["type"].as_str() {
-        Some("assistant") => {
-            let Some(content) = event["message"]["content"].as_array() else {
-                return;
-            };
-            for block in content {
-                match block["type"].as_str() {
-                    Some("text") => println!("{}", block["text"].as_str().unwrap_or_default()),
-                    Some("tool_use") => println!(
-                        "  -> {} {}",
-                        block["name"].as_str().unwrap_or("tool"),
-                        truncate(&block["input"].to_string(), 120)
-                    ),
-                    _ => {}
-                }
-            }
-        }
-        Some("result") => {
-            let cost = event["total_cost_usd"].as_f64().unwrap_or_default();
-            let secs = event["duration_ms"].as_f64().unwrap_or_default() / 1000.0;
-            let turns = event["num_turns"].as_u64().unwrap_or_default();
-            eprintln!("==> done in {secs:.1}s, {turns} turns, ${cost:.4}");
-        }
-        _ => {}
-    }
+    Ok((status, stats))
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -350,6 +340,9 @@ fn run(args: RunArgs) -> Result<()> {
 
     let total = config.tasks.len();
     let mut failures = Vec::new();
+    let mut ran = 0;
+    let mut totals = TaskStats::default();
+    let run_started = Instant::now();
 
     for (i, task) in config.tasks.iter().enumerate() {
         let n = i + 1;
@@ -363,7 +356,8 @@ fn run(args: RunArgs) -> Result<()> {
 
         let mut cmd = Command::new("claude");
         cmd.args(&config.claude_args);
-        let status = match &log_dir {
+        let task_started = Instant::now();
+        let (status, stats) = match &log_dir {
             Some(log_dir) => {
                 let log_path = log_dir.join(format!("task-{n:02}.jsonl"));
                 let header = json!({
@@ -378,27 +372,63 @@ fn run(args: RunArgs) -> Result<()> {
                 });
                 run_logged(cmd, &prompt, header, &log_path)?
             }
-            None => spawn_claude(cmd, &prompt)?.wait()?,
+            None => (spawn_claude(cmd, &prompt)?.wait()?, None),
         };
+        ran += 1;
+        let elapsed = format_elapsed(task_started);
+        if let Some(stats) = &stats {
+            totals.turns += stats.turns;
+            totals.cost += stats.cost;
+        }
 
-        if !status.success() {
-            eprintln!("==> claude failed on task {n} ({status})");
-            if args.stop_on_failure {
-                bail!("stopping after failure on task {n}");
+        if status.success() {
+            // With logging, the transcript already ends with claude's own
+            // summary line; without it, say how long the task took.
+            if stats.is_none() {
+                eprintln!("==> task {n} done in {elapsed}");
             }
+        } else {
+            eprintln!("==> claude failed on task {n} after {elapsed} ({status})");
             failures.push((n, task));
+            if args.stop_on_failure {
+                eprintln!("==> stopping after failure on task {n}");
+                break;
+            }
         }
     }
 
+    if args.dry_run {
+        return Ok(());
+    }
+
+    let mut summary = format!(
+        "==> finished {ran} of {total} tasks in {}",
+        format_elapsed(run_started)
+    );
+    if log_dir.is_some() {
+        summary.push_str(&format!(
+            " · {} · ${:.2}",
+            logs::format_turns(totals.turns),
+            totals.cost
+        ));
+    }
     if !failures.is_empty() {
-        eprintln!("==> {} of {total} failed:", failures.len());
+        summary.push_str(&format!(" · {} failed", failures.len()));
+    }
+    eprintln!("{summary}");
+
+    if !failures.is_empty() {
         for (n, task) in &failures {
-            eprintln!("    {n}: {}", truncate(first_line(task), 80));
+            eprintln!("    ✗ {n}: {}", truncate(first_line(task), 80));
         }
         std::process::exit(1);
     }
 
     Ok(())
+}
+
+fn format_elapsed(started: Instant) -> String {
+    logs::format_duration(started.elapsed().as_millis() as f64)
 }
 
 fn main() -> Result<()> {
