@@ -34,6 +34,9 @@ looper plan run NAME              # run them, one claude call per task
 # Flags passed to every `claude` call. The prompt is sent on stdin.
 claude_args = ["-p", "--permission-mode", "auto"]
 
+# Shell command run before every task (optional).
+before_task = "git pull --ff-only"
+
 # Text added before every task.
 prefix = """
 /goal
@@ -57,12 +60,20 @@ tasks = [
 ]
 ```
 
+`before_task` is run with `sh -c` before each task, from the project folder,
+with `LOOPER_PLAN`, `LOOPER_TASK`, `LOOPER_TOTAL` and (unless `--no-log`)
+`LOOPER_LOG_DIR` set. Its output is shown and saved in the task's log. If it
+fails, the task counts as failed and Claude isn't started for it;
+`--stop-on-failure` then stops the run. `{{plan}}` isn't replaced in it; use
+`$LOOPER_PLAN`.
+
 `looper plan new` starts each plan with a copy of `.looper/config.toml`, which
 is created with the defaults the first time `.looper/` is made. Edit it to
-change the `claude_args`, `prefix` and `suffix` of future plans; existing plans
-keep their own copy. The defaults include a suffix that asks Claude to work
-without asking questions, commit as it goes, run the tests, and write any
-follow-ups it didn't finish as markdown files in `.looper/tasks/{{plan}}/`.
+change the `claude_args`, `before_task`, `prefix` and `suffix` of future
+plans; existing plans keep their own copy. The defaults include a suffix that
+asks Claude to work without asking questions, commit as it goes, run the
+tests, and write any follow-ups it didn't finish as markdown files in
+`.looper/tasks/{{plan}}/`.
 `looper plan run` refuses to start while a task still says `REPLACE ME`.
 
 In the prefix, suffix and tasks, `{{plan}}` is replaced with the plan's name

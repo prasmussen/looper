@@ -80,8 +80,9 @@ pub fn list(plan_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Show a plan: its claude flags, then the prefix, each task and the suffix,
-/// with `{{plan}}` replaced as in the prompts claude gets.
+/// Show a plan: its claude flags, then its before_task command if it has one,
+/// the prefix, each task and the suffix, with `{{plan}}` replaced as in the
+/// prompts claude gets.
 pub fn show(plan: &Path, pager: bool) -> Result<()> {
     let config = Config::load(plan)?;
     let s = Style::detect();
@@ -117,21 +118,30 @@ pub fn show(plan: &Path, pager: bool) -> Result<()> {
         s.dim(&format!("{} · {modified}", plan.display()))
     ));
 
-    let mut section = |title: &str, text: &str| {
+    let mut section = |title: &str, text: &str, replace: bool| {
         line("");
         line(&s.cyan(&format!("── {title}")));
-        let text = text.trim().replace(PLAN_VAR, &name);
+        let text = text.trim();
+        let text = if replace {
+            text.replace(PLAN_VAR, &name)
+        } else {
+            text.to_string()
+        };
         if text.is_empty() {
             line(&s.dim("(empty)"));
         } else {
             line(&text);
         }
     };
-    section("Prefix", &config.prefix);
-    for (i, task) in config.tasks.iter().enumerate() {
-        section(&format!("Task {}", i + 1), task);
+    if !config.before_task.trim().is_empty() {
+        // A shell command: {{plan}} isn't replaced, LOOPER_PLAN is set instead.
+        section("Before task", &config.before_task, false);
     }
-    section("Suffix", &config.suffix);
+    section("Prefix", &config.prefix, true);
+    for (i, task) in config.tasks.iter().enumerate() {
+        section(&format!("Task {}", i + 1), task, true);
+    }
+    section("Suffix", &config.suffix, true);
     page(&out, pager)
 }
 

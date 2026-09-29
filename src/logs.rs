@@ -129,6 +129,15 @@ impl TaskLog {
         self.find(|e| e["type"] == "looper" && e["event"] == "exit")
     }
 
+    fn before_task(&self) -> Option<&Value> {
+        self.find(|e| e["type"] == "looper" && e["event"] == "before_task")
+    }
+
+    /// Whether the `before_task` command failed, so claude never ran.
+    fn before_task_failed(&self) -> bool {
+        self.before_task().is_some_and(|e| e["success"] == false)
+    }
+
     fn result(&self) -> Option<&Value> {
         self.find(|e| e["type"] == "result")
     }
@@ -167,6 +176,9 @@ impl TaskLog {
         let result_ok = self
             .result()
             .map(|r| !r["is_error"].as_bool().unwrap_or(false));
+        if self.before_task_failed() {
+            return Status::Failed;
+        }
         match (exit_ok, result_ok) {
             (Some(false), _) | (_, Some(false)) => Status::Failed,
             (_, Some(true)) | (Some(true), None) => Status::Ok,
@@ -756,6 +768,26 @@ impl Renderer {
             }
         }
 
+        if let Some(before) = log.before_task() {
+            self.section("before task");
+            let command = before["command"].as_str().unwrap_or_default();
+            self.line(&s.dim(&format!("$ {}", command.trim())));
+            let output = before["output"].as_str().unwrap_or_default();
+            if !output.trim().is_empty() {
+                self.line(output.trim_end());
+            }
+            if before["success"] == false {
+                let code = before["exit_code"]
+                    .as_i64()
+                    .map_or("unknown".into(), |c| c.to_string());
+                self.line(&s.red(&format!(
+                    "✗ before_task exited with code {code}; claude didn't run"
+                )));
+                return;
+            }
+            self.line("");
+        }
+
         self.section("transcript");
         for event in &log.events {
             self.event(event);
@@ -1164,7 +1196,28 @@ fn summary_is_complete(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::format_duration;
+    use std::path::PathBuf;
+
+    use serde_json::json;
+
+    use super::{Status, TaskLog, format_duration};
+
+    fn task_log(events: Vec<serde_json::Value>) -> TaskLog {
+        TaskLog {
+            path: PathBuf::from("task-01.jsonl"),
+            events,
+        }
+    }
+
+    #[test]
+    fn failed_before_task_fails_the_task() {
+        let start = json!({"type": "looper", "event": "start", "task": 1});
+        let before =
+            |success| json!({"type": "looper", "event": "before_task", "success": success});
+        assert!(task_log(vec![start.clone()]).status() == Status::Incomplete);
+        assert!(task_log(vec![start.clone(), before(false)]).status() == Status::Failed);
+        assert!(task_log(vec![start, before(true)]).status() == Status::Incomplete);
+    }
 
     #[test]
     fn formats_durations_without_milliseconds() {

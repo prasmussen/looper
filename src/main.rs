@@ -45,6 +45,11 @@ claude_args = [
   "--permission-mode", "auto",
 ]
 
+# Shell command run with `sh -c` before every task, from the project folder,
+# with LOOPER_PLAN, LOOPER_TASK, LOOPER_TOTAL and LOOPER_LOG_DIR set. If it
+# fails, the task fails without starting claude.
+# before_task = "git pull --ff-only"
+
 # Text added before every task. `/goal` makes Claude keep working until the
 # task and suffix are done; it must be the very first thing in the prompt.
 prefix = """
@@ -259,6 +264,8 @@ struct RunArgs {
 #[allow(dead_code)] // Only parsed to check the file before copying it.
 struct Defaults {
     #[serde(default)]
+    before_task: String,
+    #[serde(default)]
     prefix: String,
     #[serde(default)]
     suffix: String,
@@ -269,6 +276,8 @@ struct Defaults {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
+    #[serde(default)]
+    before_task: String,
     #[serde(default)]
     prefix: String,
     #[serde(default)]
@@ -413,10 +422,37 @@ struct TaskStats {
     cost: f64,
 }
 
-/// Run claude with stream-json output, writing every event to `log_path` and
+/// Run the plan's `before_task` command with `sh -c`, printing its output
+/// (stdout and stderr together, in order) above the status line. Returns how
+/// it exited and what it printed.
+fn run_before_task(mut cmd: Command, status: &StatusLine) -> Result<(ExitStatus, String)> {
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("failed to run the before_task command with sh")?;
+    let mut stdout = BufReader::new(child.stdout.take().expect("stdout is piped"));
+    let mut output = String::new();
+    let mut buf = Vec::new();
+    while stdout
+        .read_until(b'\n', &mut buf)
+        .context("failed to read before_task output")?
+        > 0
+    {
+        let line = String::from_utf8_lossy(&buf);
+        let line = line.trim_end_matches(['\n', '\r']);
+        status.out(&format!("{line}\n"));
+        output.push_str(line);
+        output.push('\n');
+        buf.clear();
+    }
+    Ok((child.wait()?, output))
+}
+
+/// Run claude with stream-json output, writing every event to `log` and
 /// printing a readable version of the conversation to the terminal. The log
-/// starts with a looper `start` event (`header`) and ends with an `exit` event,
-/// so it records what was asked and how claude exited.
+/// already starts with a looper `start` event; this adds an `exit` event at
+/// the end, so it records what was asked and how claude exited.
 ///
 /// Models claude reports are added to `models`, and announced the first time
 /// each one is seen in the run. The status line's token count follows along
@@ -424,15 +460,10 @@ struct TaskStats {
 fn run_logged(
     mut cmd: Command,
     prompt: &str,
-    header: Value,
-    log_path: &Path,
+    log: &mut File,
     models: &mut Vec<String>,
     status: &StatusLine,
 ) -> Result<(ExitStatus, Option<TaskStats>)> {
-    let mut log = File::create(log_path)
-        .with_context(|| format!("failed to create log file {}", log_path.display()))?;
-    writeln!(log, "{header}")?;
-
     cmd.args(["--output-format", "stream-json", "--verbose"])
         .stdout(Stdio::piped());
     let mut child = spawn_claude(cmd, prompt)?;
@@ -594,6 +625,12 @@ fn run(looper: &Path, args: RunArgs) -> Result<()> {
     }
 
     if args.dry_run {
+        if !config.before_task.trim().is_empty() {
+            eprintln!(
+                "==> before each task: sh -c {:?}",
+                config.before_task.trim()
+            );
+        }
         eprintln!("==> claude {} < prompt", config.claude_args.join(" "));
     }
 
@@ -636,18 +673,13 @@ fn run(looper: &Path, args: RunArgs) -> Result<()> {
 
         status.err(&format!("==> [{n}/{total}] {}", truncate(title, 80)));
         status.set_task(n, title, Some(title::generate(task)));
-
-        let mut cmd = Command::new("claude");
-        cmd.args(&config.claude_args);
-        // Run from the project folder, so paths like .looper/tasks/ in the
-        // prompt point at the right place.
-        if !project_dir(looper).as_os_str().is_empty() {
-            cmd.current_dir(project_dir(looper));
-        }
         let task_started = Instant::now();
-        let (exit, stats) = match &log_dir {
+
+        let mut log = match &log_dir {
             Some(log_dir) => {
                 let log_path = log_dir.join(format!("task-{n:02}.jsonl"));
+                let mut log = File::create(&log_path)
+                    .with_context(|| format!("failed to create log file {}", log_path.display()))?;
                 let header = json!({
                     "type": "looper",
                     "event": "start",
@@ -658,8 +690,67 @@ fn run(looper: &Path, args: RunArgs) -> Result<()> {
                     "prompt": prompt,
                     "started_at": chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                 });
-                run_logged(cmd, &prompt, header, &log_path, &mut models, &status)?
+                writeln!(log, "{header}")?;
+                Some(log)
             }
+            None => None,
+        };
+
+        let before_task = config.before_task.trim();
+        if !before_task.is_empty() {
+            status.err(&format!(
+                "==> before task: {}",
+                truncate(first_line(before_task), 80)
+            ));
+            let mut cmd = Command::new("sh");
+            // Send stderr to stdout, so the two stay in order in the output.
+            cmd.arg("-c")
+                .arg(format!("exec 2>&1\n{before_task}"))
+                .env("LOOPER_PLAN", &name)
+                .env("LOOPER_TASK", n.to_string())
+                .env("LOOPER_TOTAL", total.to_string());
+            if let Some(log_dir) = &log_dir {
+                // Absolute, since the command runs from the project folder.
+                cmd.env("LOOPER_LOG_DIR", std::path::absolute(log_dir)?);
+            }
+            if !project_dir(looper).as_os_str().is_empty() {
+                cmd.current_dir(project_dir(looper));
+            }
+            let (exit, output) = run_before_task(cmd, &status)?;
+            if let Some(log) = &mut log {
+                let event = json!({
+                    "type": "looper",
+                    "event": "before_task",
+                    "command": before_task,
+                    "output": output,
+                    "success": exit.success(),
+                    "exit_code": exit.code(),
+                });
+                writeln!(log, "{event}")?;
+            }
+            if !exit.success() {
+                status.err(&format!(
+                    "==> before_task failed on task {n} ({exit}); skipping it"
+                ));
+                ran += 1;
+                failures.push((n, task));
+                if args.stop_on_failure {
+                    status.err(&format!("==> stopping after failure on task {n}"));
+                    break;
+                }
+                continue;
+            }
+        }
+
+        let mut cmd = Command::new("claude");
+        cmd.args(&config.claude_args);
+        // Run from the project folder, so paths like .looper/tasks/ in the
+        // prompt point at the right place.
+        if !project_dir(looper).as_os_str().is_empty() {
+            cmd.current_dir(project_dir(looper));
+        }
+        let (exit, stats) = match &mut log {
+            Some(log) => run_logged(cmd, &prompt, log, &mut models, &status)?,
             None => (run_plain(cmd, &prompt, &status)?, None),
         };
         ran += 1;
@@ -774,6 +865,7 @@ mod tests {
     #[test]
     fn prompt_replaces_plan() {
         let config = Config {
+            before_task: String::new(),
             prefix: "/goal".into(),
             suffix: "Write follow-ups to .looper/tasks/{{plan}}/.".into(),
             claude_args: Vec::new(),
