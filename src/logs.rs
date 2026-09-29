@@ -133,11 +133,6 @@ impl TaskLog {
         self.find(|e| e["type"] == "looper" && e["event"] == "before_task")
     }
 
-    /// Whether the `before_task` command failed, so claude never ran.
-    fn before_task_failed(&self) -> bool {
-        self.before_task().is_some_and(|e| e["success"] == false)
-    }
-
     fn result(&self) -> Option<&Value> {
         self.find(|e| e["type"] == "result")
     }
@@ -176,9 +171,6 @@ impl TaskLog {
         let result_ok = self
             .result()
             .map(|r| !r["is_error"].as_bool().unwrap_or(false));
-        if self.before_task_failed() {
-            return Status::Failed;
-        }
         match (exit_ok, result_ok) {
             (Some(false), _) | (_, Some(false)) => Status::Failed,
             (_, Some(true)) | (Some(true), None) => Status::Ok,
@@ -780,10 +772,9 @@ impl Renderer {
                 let code = before["exit_code"]
                     .as_i64()
                     .map_or("unknown".into(), |c| c.to_string());
-                self.line(&s.red(&format!(
-                    "✗ before_task exited with code {code}; claude didn't run"
+                self.line(&s.yellow(&format!(
+                    "⚠ before_task exited with code {code}; the task ran anyway"
                 )));
-                return;
             }
             self.line("");
         }
@@ -1210,13 +1201,12 @@ mod tests {
     }
 
     #[test]
-    fn failed_before_task_fails_the_task() {
+    fn failed_before_task_does_not_fail_the_task() {
         let start = json!({"type": "looper", "event": "start", "task": 1});
-        let before =
-            |success| json!({"type": "looper", "event": "before_task", "success": success});
-        assert!(task_log(vec![start.clone()]).status() == Status::Incomplete);
-        assert!(task_log(vec![start.clone(), before(false)]).status() == Status::Failed);
-        assert!(task_log(vec![start, before(true)]).status() == Status::Incomplete);
+        let before = json!({"type": "looper", "event": "before_task", "success": false});
+        let result = json!({"type": "result", "is_error": false});
+        let exit = json!({"type": "looper", "event": "exit", "success": true});
+        assert!(task_log(vec![start, before, result, exit]).status() == Status::Ok);
     }
 
     #[test]

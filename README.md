@@ -63,9 +63,8 @@ tasks = [
 `before_task` is run with `sh -c` before each task, from the project folder,
 with `LOOPER_PLAN`, `LOOPER_TASK`, `LOOPER_TOTAL` and (unless `--no-log`)
 `LOOPER_LOG_DIR` set. Its output is shown and saved in the task's log. If it
-fails, the task counts as failed and Claude isn't started for it;
-`--stop-on-failure` then stops the run. `{{plan}}` isn't replaced in it; use
-`$LOOPER_PLAN`.
+fails, looper warns and runs the task anyway; only Claude's result decides
+whether the task failed. `{{plan}}` isn't replaced in it; use `$LOOPER_PLAN`.
 
 `looper plan new` starts each plan with a copy of `.looper/config.toml`, which
 is created with the defaults the first time `.looper/` is made. Edit it to

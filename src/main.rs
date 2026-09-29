@@ -47,7 +47,7 @@ claude_args = [
 
 # Shell command run with `sh -c` before every task, from the project folder,
 # with LOOPER_PLAN, LOOPER_TASK, LOOPER_TOTAL and LOOPER_LOG_DIR set. If it
-# fails, the task fails without starting claude.
+# fails, looper warns and runs the task anyway.
 # before_task = "git pull --ff-only"
 
 # Text added before every task. `/goal` makes Claude keep working until the
@@ -730,15 +730,8 @@ fn run(looper: &Path, args: RunArgs) -> Result<()> {
             }
             if !exit.success() {
                 status.err(&format!(
-                    "==> before_task failed on task {n} ({exit}); skipping it"
+                    "==> before_task failed on task {n} ({exit}); running the task anyway"
                 ));
-                ran += 1;
-                failures.push((n, task));
-                if args.stop_on_failure {
-                    status.err(&format!("==> stopping after failure on task {n}"));
-                    break;
-                }
-                continue;
             }
         }
 
