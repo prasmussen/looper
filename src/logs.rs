@@ -298,14 +298,17 @@ impl Tokens {
         self.input + self.cache_write + self.cache_read + self.output == 0
     }
 
-    /// Every type, e.g. `tokens 174 in / 43k out · cache: 7.3M read / 117k write`.
+    /// Every type, e.g. `tokens 7.4M in / 43k out · input: 7.3M cache read /
+    /// 117k cache write / 174 uncached`. `input_tokens` only counts the input
+    /// that was neither read from nor written to the cache, so on its own it
+    /// is tiny.
     pub fn format(&self) -> String {
         format!(
-            "tokens {} in / {} out · cache: {} read / {} write",
-            format_count(self.input),
-            format_count(self.output),
+            "{} · input: {} cache read / {} cache write / {} uncached",
+            self.format_short(),
             format_count(self.cache_read),
-            format_count(self.cache_write)
+            format_count(self.cache_write),
+            format_count(self.input)
         )
     }
 
@@ -314,9 +317,13 @@ impl Tokens {
     pub fn format_short(&self) -> String {
         format!(
             "tokens {} in / {} out",
-            format_count(self.input + self.cache_write + self.cache_read),
+            format_count(self.total_input()),
             format_count(self.output)
         )
+    }
+
+    fn total_input(&self) -> u64 {
+        self.input + self.cache_write + self.cache_read
     }
 }
 
