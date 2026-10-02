@@ -610,7 +610,7 @@ fn write_gitignore(dir: &Path) -> Result<()> {
 
 fn run(looper: &Path, args: RunArgs) -> Result<()> {
     let plan = resolve_plan(looper, &args.plan);
-    let config = Config::load(&plan)?;
+    let mut config = Config::load(&plan)?;
     if config.tasks.is_empty() {
         bail!("no tasks defined in {}", plan.display());
     }
@@ -643,9 +643,8 @@ fn run(looper: &Path, args: RunArgs) -> Result<()> {
             .with_context(|| format!("failed to create directory {}", dir.display()))?;
     }
 
-    let total = config.tasks.len();
     let run_started = Instant::now();
-    let status = StatusLine::start(total, run_started);
+    let status = StatusLine::start(run_started);
 
     let log_dir = match (&args.log_dir, args.no_log || args.dry_run) {
         (_, true) => None,
@@ -657,12 +656,34 @@ fn run(looper: &Path, args: RunArgs) -> Result<()> {
     }
 
     let mut failures = Vec::new();
+    // The text of every task taken so far, run or not.
+    let mut done: Vec<String> = Vec::new();
     let mut ran = 0;
     let mut totals = TaskStats::default();
     let mut models = Vec::new();
+    let mut placeholder = false;
+    let mut total;
 
-    for (i, task) in config.tasks.iter().enumerate() {
-        let n = i + 1;
+    loop {
+        // Re-read the plan before every task after the first, so it can be
+        // changed while it runs. A plan that doesn't load keeps the last one.
+        if !done.is_empty() && !args.dry_run {
+            match Config::load(&plan) {
+                Ok(new) => config = new,
+                Err(err) => status.err(&format!(
+                    "==> keeping the plan as it was, since it no longer loads: {err:#}"
+                )),
+            }
+        }
+        let remaining = remaining(&config.tasks, &done);
+        total = done.len() + remaining.len();
+        let Some(task) = remaining.first().map(|t| t.to_string()) else {
+            break;
+        };
+        let n = done.len() + 1;
+        done.push(task.clone());
+        let task = task.as_str();
+
         let prompt = config.prompt(task, &name);
         let title = first_line(task);
         if args.dry_run {
@@ -671,8 +692,14 @@ fn run(looper: &Path, args: RunArgs) -> Result<()> {
             continue;
         }
 
+        if task.contains(PLACEHOLDER) {
+            status.err(&format!("==> task {n} still says {PLACEHOLDER}; stopping"));
+            placeholder = true;
+            break;
+        }
+
         status.err(&format!("==> [{n}/{total}] {}", truncate(title, 80)));
-        status.set_task(n, title, Some(title::generate(task)));
+        status.set_task(n, total, title, Some(title::generate(task)));
         let task_started = Instant::now();
 
         let mut log = match &log_dir {
@@ -763,7 +790,7 @@ fn run(looper: &Path, args: RunArgs) -> Result<()> {
             status.err(&format!(
                 "==> claude failed on task {n} after {elapsed} ({exit})"
             ));
-            failures.push((n, task));
+            failures.push((n, task.to_string()));
             if args.stop_on_failure {
                 status.err(&format!("==> stopping after failure on task {n}"));
                 break;
@@ -799,10 +826,30 @@ fn run(looper: &Path, args: RunArgs) -> Result<()> {
         for (n, task) in &failures {
             status.err(&format!("    ✗ {n}: {}", truncate(first_line(task), 80)));
         }
+    }
+    if !failures.is_empty() || placeholder {
         std::process::exit(1);
     }
 
     Ok(())
+}
+
+/// The tasks of `tasks` that haven't been taken yet, in plan order. Each task
+/// in `done` accounts for one task with the same text, so a task listed twice
+/// runs twice, and tasks added, removed or moved anywhere in the plan are
+/// picked up.
+fn remaining<'a>(tasks: &'a [String], done: &[String]) -> Vec<&'a String> {
+    let mut done: Vec<&str> = done.iter().map(|t| t.trim()).collect();
+    tasks
+        .iter()
+        .filter(|task| match done.iter().position(|d| *d == task.trim()) {
+            Some(i) => {
+                done.swap_remove(i);
+                false
+            }
+            None => true,
+        })
+        .collect()
 }
 
 fn format_elapsed(started: Instant) -> String {
@@ -853,7 +900,31 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::Config;
+    use super::{Config, remaining};
+
+    fn strings(tasks: &[&str]) -> Vec<String> {
+        tasks.iter().map(|t| t.to_string()).collect()
+    }
+
+    #[test]
+    fn remaining_skips_done_tasks_wherever_they_are() {
+        let tasks = strings(&["new", "b", "a", "c"]);
+        let done = strings(&["a", "b"]);
+        assert_eq!(remaining(&tasks, &done), ["new", "c"]);
+    }
+
+    #[test]
+    fn remaining_counts_repeated_tasks() {
+        let tasks = strings(&["a", "a", "b"]);
+        assert_eq!(remaining(&tasks, &strings(&["a"])), ["a", "b"]);
+        assert_eq!(remaining(&tasks, &strings(&["a", "a"])), ["b"]);
+    }
+
+    #[test]
+    fn remaining_ignores_surrounding_whitespace() {
+        let tasks = strings(&["  a\n", "b"]);
+        assert_eq!(remaining(&tasks, &strings(&["a"])), ["b"]);
+    }
 
     #[test]
     fn prompt_replaces_plan() {

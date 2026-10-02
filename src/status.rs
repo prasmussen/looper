@@ -57,14 +57,14 @@ impl Task {
 }
 
 impl StatusLine {
-    pub fn start(total: usize, run_started: Instant) -> Self {
+    pub fn start(run_started: Instant) -> Self {
         let enabled = std::io::stdout().is_terminal()
             && std::io::stderr().is_terminal()
             && std::env::var_os("TERM").is_none_or(|t| t != "dumb");
         let shared = Arc::new(Mutex::new(State {
             enabled,
             style: Style::detect(),
-            total,
+            total: 0,
             run_started,
             done_tokens: Tokens::default(),
             task: None,
@@ -88,10 +88,17 @@ impl StatusLine {
         Self { shared }
     }
 
-    /// Show `title` as task `n`, with its clock starting now. A title from
-    /// `generated` replaces it once it arrives.
-    pub fn set_task(&self, n: usize, title: &str, generated: Option<Receiver<String>>) {
+    /// Show `title` as task `n` of `total`, with its clock starting now. A
+    /// title from `generated` replaces it once it arrives.
+    pub fn set_task(
+        &self,
+        n: usize,
+        total: usize,
+        title: &str,
+        generated: Option<Receiver<String>>,
+    ) {
         let mut state = self.shared.lock().unwrap();
+        state.total = total;
         if let Some(tokens) = state.task.as_ref().map(|t| t.tokens) {
             state.done_tokens += tokens;
         }

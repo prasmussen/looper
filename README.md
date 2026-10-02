@@ -97,6 +97,13 @@ looper plan delete PLAN...    # delete plans
 | `--log-dir DIR`     | Save transcripts under `DIR` instead of `.looper/logs`     |
 | `--no-log`          | Don't save transcripts; only show Claude's final replies   |
 
+The plan is read again before every task, so you can change it while it runs:
+add, remove, reorder or rewrite tasks, or change the flags, prefix, suffix or
+`before_task`. The next task is the first one in the plan that hasn't run yet,
+matched by its text, so editing a task that already ran makes it run again.
+If the plan doesn't load, for example because it's half-saved, looper warns
+and keeps the last version. A task that says `REPLACE ME` stops the run there.
+
 While it runs, looper shows a readable version of the conversation with a
 timestamp on each line, and a status line at the bottom with the current task,
 how many are left, elapsed time and tokens used. A short title for each task is
