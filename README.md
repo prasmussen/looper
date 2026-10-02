@@ -85,6 +85,7 @@ own and runs of different plans don't mix.
 looper plan list              # plans, most recently changed first
 looper plan show PLAN         # a plan's claude flags, prefix, tasks and suffix
 looper plan run PLAN          # run every task in a plan
+looper plan stop PLAN         # stop a run once its current task is done
 looper plan delete PLAN...    # delete plans
 ```
 
@@ -103,6 +104,12 @@ add, remove, reorder or rewrite tasks, or change the flags, prefix, suffix or
 matched by its text, so editing a task that already ran makes it run again.
 If the plan doesn't load, for example because it's half-saved, looper warns
 and keeps the last version. A task that says `REPLACE ME` stops the run there.
+
+To end a run without cutting a task short, run `looper plan stop PLAN` from
+another terminal. It creates `PLAN.stop` next to the plan file; the status line
+then says the run is stopping, and the run ends when the current task is done
+instead of starting the next one. Deleting the file before then takes the stop
+back. A stop file left from an earlier run is removed when a run starts.
 
 While it runs, looper shows a readable version of the conversation with a
 timestamp on each line, and a status line at the bottom with the current task,

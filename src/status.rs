@@ -5,6 +5,7 @@
 //! line instead of over it, with the time at the start of every line.
 
 use std::io::{IsTerminal, Write};
+use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -33,6 +34,8 @@ struct State {
     /// so it doesn't overwrite the text.
     mid_line: bool,
     stopped: bool,
+    /// The file that asks the run to stop after the current task.
+    stop_file: Option<PathBuf>,
 }
 
 struct Task {
@@ -57,7 +60,9 @@ impl Task {
 }
 
 impl StatusLine {
-    pub fn start(run_started: Instant) -> Self {
+    /// Start the status line. While `stop_file` exists, it says the run stops
+    /// after the current task.
+    pub fn start(run_started: Instant, stop_file: Option<PathBuf>) -> Self {
         let enabled = std::io::stdout().is_terminal()
             && std::io::stderr().is_terminal()
             && std::env::var_os("TERM").is_none_or(|t| t != "dumb");
@@ -71,6 +76,7 @@ impl StatusLine {
             shown: false,
             mid_line: false,
             stopped: false,
+            stop_file,
         }));
         if enabled {
             let shared = Arc::clone(&shared);
@@ -231,6 +237,9 @@ impl State {
         .saturating_sub(1);
         let used = counts.chars().count() + times.chars().count() + 6;
         let title = crate::truncate(title, width.saturating_sub(used + 1));
+        if self.stop_file.as_ref().is_some_and(|f| f.exists()) {
+            times.push_str(" · stopping after this task");
+        }
         let line = format!("{counts} · {times} · {title}");
         let line = crate::truncate(&line, width.saturating_sub(1));
         let _ = write!(std::io::stderr(), "\r\x1b[2K{}", s.cyan(&line));

@@ -10,6 +10,8 @@ use clap::{Parser, Subcommand};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use logs::plural;
+
 use status::StatusLine;
 
 mod logs;
@@ -153,6 +155,12 @@ enum PlanCmd {
 
     /// Run every task in a plan
     Run(RunArgs),
+
+    /// Make a running plan stop once its current task is done
+    Stop {
+        /// Plan to stop: a name from .looper/plans, or a path to a plan file
+        plan: String,
+    },
 
     /// Delete plans
     Delete {
@@ -332,6 +340,24 @@ fn plan_path(looper: &Path, name: &str) -> PathBuf {
     looper.join(PLANS_DIR).join(format!("{name}.toml"))
 }
 
+/// The file whose presence asks a run of `plan` to stop after its current
+/// task: the plan's path with `.stop` in place of `.toml`.
+fn stop_path(plan: &Path) -> PathBuf {
+    plan.with_extension("stop")
+}
+
+/// Ask the run of `plan`, a name or path, to stop after its current task.
+fn stop(looper: &Path, plan: &str) -> Result<()> {
+    let plan = &resolve_plan(looper, plan);
+    if !plan.is_file() {
+        bail!("no plan {} (see `looper plan list`)", plan_name(plan));
+    }
+    let path = stop_path(plan);
+    std::fs::write(&path, "").with_context(|| format!("failed to create {}", path.display()))?;
+    eprintln!("{} will stop after its current task", plan_name(plan));
+    Ok(())
+}
+
 /// The name of a plan: its file name without `.toml`.
 fn plan_name(plan: &Path) -> String {
     plan.file_stem()
@@ -340,7 +366,7 @@ fn plan_name(plan: &Path) -> String {
         .into_owned()
 }
 
-/// Resolve the plan argument of `looper plan run`, `show` and `delete`: an existing file is used as is,
+/// Resolve the plan argument of `looper plan run`, `stop`, `show` and `delete`: an existing file is used as is,
 /// anything else is looked up by name in .looper/plans.
 fn resolve_plan(looper: &Path, plan: &str) -> PathBuf {
     let path = Path::new(plan);
@@ -643,8 +669,14 @@ fn run(looper: &Path, args: RunArgs) -> Result<()> {
             .with_context(|| format!("failed to create directory {}", dir.display()))?;
     }
 
+    // A stop asked for before this run started isn't meant for it.
+    let stop_file = stop_path(&plan);
+    if !args.dry_run {
+        remove_stop_file(&stop_file)?;
+    }
+
     let run_started = Instant::now();
-    let status = StatusLine::start(run_started);
+    let status = StatusLine::start(run_started, (!args.dry_run).then(|| stop_file.clone()));
 
     let log_dir = match (&args.log_dir, args.no_log || args.dry_run) {
         (_, true) => None,
@@ -662,6 +694,7 @@ fn run(looper: &Path, args: RunArgs) -> Result<()> {
     let mut totals = TaskStats::default();
     let mut models = Vec::new();
     let mut placeholder = false;
+    let mut stopped = false;
     let mut total;
 
     loop {
@@ -680,6 +713,14 @@ fn run(looper: &Path, args: RunArgs) -> Result<()> {
         let Some(task) = remaining.first().map(|t| t.to_string()) else {
             break;
         };
+        if !done.is_empty() && !args.dry_run && stop_file.exists() {
+            status.err(&format!(
+                "==> stopping as asked, with {} left",
+                plural(remaining.len(), "task")
+            ));
+            stopped = true;
+            break;
+        }
         let n = done.len() + 1;
         done.push(task.clone());
         let task = task.as_str();
@@ -802,9 +843,11 @@ fn run(looper: &Path, args: RunArgs) -> Result<()> {
     if args.dry_run {
         return Ok(());
     }
+    remove_stop_file(&stop_file)?;
 
     let mut summary = format!(
-        "==> finished {ran} of {total} tasks in {}",
+        "==> {} {ran} of {total} tasks in {}",
+        if stopped { "stopped after" } else { "finished" },
         format_elapsed(run_started)
     );
     if !models.is_empty() {
@@ -832,6 +875,15 @@ fn run(looper: &Path, args: RunArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn remove_stop_file(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() != ErrorKind::NotFound => {
+            Err(e).with_context(|| format!("failed to delete {}", path.display()))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// The tasks of `tasks` that haven't been taken yet, in plan order. Each task
@@ -868,6 +920,7 @@ fn main() -> Result<()> {
                 plans::show(&resolve_plan(looper, &plan), !no_pager)
             }
             PlanCmd::Run(args) => run(looper, args),
+            PlanCmd::Stop { plan } => stop(looper, &plan),
             PlanCmd::Delete { plans } => plans::delete(looper, &plans),
         },
         Cmd::Log { log_dir, command } => {
